@@ -1,6 +1,5 @@
 """Utility functions for molecular reward calculations."""
 
-import dgl
 from flowmol.analysis.molecule_builder import SampledMolecule
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -24,7 +23,7 @@ def graph_to_mols(x: DDGraph) -> list[Chem.Mol]:
         List of molecules in the graph.
     """
     mols = []
-    for sample in dgl.unbatch(x.graph):
+    for sample in x.graph.to_data_list():
         mol = SampledMolecule(sample.cpu(), ATOM_TYPE_MAP).rdkit_mol
         mols.append(mol)
 

@@ -3,9 +3,10 @@
 import warnings
 from typing import Any, Optional
 
-import dgl
 import torch
 import torch.nn.functional as F
+from torch_geometric.data import Batch, Data
+from torch_geometric.nn import global_mean_pool
 
 try:
     import flowmol
@@ -18,7 +19,7 @@ except ImportError as exc:  # pragma: no cover - only hit when dependency is mis
     ) from exc
 
 from diffusiongym import BaseModel, ConstantNoiseSchedule, CosineScheduler, Scheduler
-from diffusiongym.molecules.types import DDGraph
+from diffusiongym.molecules.types import DDGraph, _iter_edge_features, _iter_node_features
 from diffusiongym.registry import base_model_registry
 from diffusiongym.types import DDTensor
 
@@ -79,47 +80,40 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
         for n_atoms_i in torch.unique(n_atoms):
             edge_idxs_dict[int(n_atoms_i)] = build_edge_idxs(n_atoms_i)
 
-        g = []
+        data_list: list[Data] = []
         for n_atoms_i in n_atoms:
             edge_idxs = edge_idxs_dict[int(n_atoms_i)]
-            g_i = dgl.graph((edge_idxs[0], edge_idxs[1]), num_nodes=n_atoms_i, device=self.device)
-            g.append(g_i)
+            data_list.append(Data(edge_index=edge_idxs.to(self.device), num_nodes=int(n_atoms_i)))
 
-        g = dgl.batch(g)
+        g = Batch.from_data_list(data_list)
         ue_mask = get_upper_edge_mask(g)
         n_idx, e_idx = get_batch_idxs(g)
         g = self.model.sample_prior(g, n_idx, ue_mask)
 
-        # Set all x_0 to x_t (this is what FlowMol expects)
-        for key in list(g.ndata.keys()):
+        # Rename _0 features to _t (FlowMol stores priors with _0 suffix)
+        for key in list(g.keys()):
             if key.endswith("_0"):
-                g.ndata[key[:-2] + "_t"] = g.ndata.pop(key)
-
-        for key in list(g.edata.keys()):
-            if key.endswith("_0"):
-                g.edata[key[:-2] + "_t"] = g.edata.pop(key)
+                g[key[:-2] + "_t"] = g[key]
+                del g[key]
 
         return DDGraph(g, ue_mask, n_idx, e_idx), kwargs
 
     def preprocess(self, x: DDGraph, **kwargs: Any) -> tuple[DDGraph, dict[str, Any]]:
         if "n_atoms" not in kwargs:
-            kwargs["n_atoms"] = x.graph.batch_num_nodes()
+            kwargs["n_atoms"] = x.graph.ptr.diff()
 
         return x, kwargs
 
     def postprocess(self, x: DDGraph) -> DDGraph:
         """Re-name features from x_t to x_1."""
         g = x.graph.clone()
-        for key in list(g.ndata.keys()):
+        for key in list(g.keys()):
             if key.endswith("_t"):
-                g.ndata[key[:-2] + "_1"] = g.ndata.pop(key)
+                g[key[:-2] + "_1"] = g[key]
+                del g[key]
 
-        for key in list(g.edata.keys()):
-            if key.endswith("_t"):
-                g.edata[key[:-2] + "_1"] = g.edata.pop(key)
-
-        # To enable usage with SampledMolecule from flowmol
-        g.edata["ue_mask"] = x.ue_mask
+        # SampledMolecule (PyG-native) expects upper_edge_mask as a direct attribute
+        g.upper_edge_mask = x.ue_mask
         return DDGraph(g, x.ue_mask, x.n_idx, x.e_idx)
 
     def forward(self, x: DDGraph, t: torch.Tensor, **kwargs: Any) -> DDGraph:
@@ -134,17 +128,15 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
         )
 
         out_graph = x._get_empty_graph()
-        for key in x.graph.ndata:
-            out_graph.ndata[key] = output[key[:-2]]
+        for key, _ in _iter_node_features(x.graph):
+            out_graph[key] = output[key[:-2]]
 
-        for key in x.graph.edata:
-            data = x.graph.edata[key]
-            if isinstance(data, torch.Tensor):
-                # Output only contains upper edge data, need to expand to both upper and lower
-                edge_data = torch.zeros_like(data)
-                edge_data[x.ue_mask] = output[key[:-2]]  # Assign to upper edges
-                edge_data[~x.ue_mask] = output[key[:-2]]  # Assign same values to lower edges
-                out_graph.edata[key] = edge_data
+        for key, data in _iter_edge_features(x.graph):
+            # Output only contains upper edge data; expand to both upper and lower
+            edge_data = torch.zeros_like(data)
+            edge_data[x.ue_mask] = output[key[:-2]]
+            edge_data[~x.ue_mask] = output[key[:-2]]
+            out_graph[key] = edge_data
 
         return DDGraph(out_graph, x.ue_mask, x.n_idx, x.e_idx)
 
@@ -196,21 +188,19 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
 
         g = pred.graph
 
-        with g.local_scope():
-            # It is much more efficient to not weight the loss for each node/edge individually
-            # (which is what they do in the original FlowMol code)
-            g.ndata["loss_x"] = F.mse_loss(g.ndata["x_t"], x1.graph.ndata["x_t"], reduction="none").mean(dim=-1)  # type: ignore
-            g.ndata["loss_a"] = F.cross_entropy(g.ndata["a_t"], x1.graph.ndata["a_t"].argmax(dim=-1), reduction="none")  # type: ignore
-            g.ndata["loss_c"] = F.cross_entropy(g.ndata["c_t"], x1.graph.ndata["c_t"].argmax(dim=-1), reduction="none")  # type: ignore
-            # todo: only over upper edge
-            g.edata["loss_e"] = F.cross_entropy(g.edata["e_t"], x1.graph.edata["e_t"].argmax(dim=-1), reduction="none")  # type: ignore
+        # Compute per-node/edge losses without mutating pred.graph
+        loss_x = F.mse_loss(g.x_t, x1.graph.x_t, reduction="none").mean(dim=-1)  # type: ignore[operator]
+        loss_a = F.cross_entropy(g.a_t, x1.graph.a_t.argmax(dim=-1), reduction="none")  # type: ignore[operator]
+        loss_c = F.cross_entropy(g.c_t, x1.graph.c_t.argmax(dim=-1), reduction="none")  # type: ignore[operator]
+        # todo: only over upper edge
+        loss_e = F.cross_entropy(g.e_t, x1.graph.e_t.argmax(dim=-1), reduction="none")  # type: ignore[operator]
 
-            losses = {
-                "x": dgl.readout_nodes(g, feat="loss_x", op="mean"),
-                "a": dgl.readout_nodes(g, feat="loss_a", op="mean"),
-                "c": dgl.readout_nodes(g, feat="loss_c", op="mean"),
-                "e": dgl.readout_edges(g, feat="loss_e", op="mean"),
-            }
+        losses = {
+            "x": global_mean_pool(loss_x.unsqueeze(-1), pred.n_idx).squeeze(-1),
+            "a": global_mean_pool(loss_a.unsqueeze(-1), pred.n_idx).squeeze(-1),
+            "c": global_mean_pool(loss_c.unsqueeze(-1), pred.n_idx).squeeze(-1),
+            "e": global_mean_pool(loss_e.unsqueeze(-1), pred.e_idx).squeeze(-1),
+        }
 
         total_loss = torch.zeros(len(x1), device=x1.device, requires_grad=True)
         loss_weights = self.model.total_loss_weights
@@ -235,7 +225,7 @@ class FlowMolScheduler(Scheduler[DDGraph]):
     def _alpha(self, x: DDGraph, t: torch.Tensor) -> torch.Tensor:
         out = torch.zeros(t.shape[0], len(self.schedulers), device=t.device, dtype=t.dtype)
         for idx, key in enumerate(self.scheduler_order):
-            val = self.schedulers[key].alpha(DDTensor(torch.zeros(x.graph.batch_size, 1, device=x.device)), t)
+            val = self.schedulers[key].alpha(DDTensor(torch.zeros(x.graph.num_graphs, 1, device=x.device)), t)
             out[:, idx] = val.data.squeeze(-1)
 
         return out
@@ -246,13 +236,15 @@ class FlowMolScheduler(Scheduler[DDGraph]):
         res = x._get_empty_graph()
 
         alphas = self._alpha(x, t)
+        node_feat_keys = {k for k, _ in _iter_node_features(g)}
+        edge_feat_keys = {k for k, _ in _iter_edge_features(g)}
         for idx, key in enumerate(self.scheduler_order):
-            if key in g.ndata:
+            if key in node_feat_keys:
                 t_alpha = alphas[:, idx].unsqueeze(-1)
-                res.ndata[key] = t_alpha[x.n_idx]
-            elif key in g.edata:
+                res[key] = t_alpha[x.n_idx]
+            elif key in edge_feat_keys:
                 t_alpha = alphas[:, idx].unsqueeze(-1)
-                res.edata[key] = t_alpha[x.e_idx]
+                res[key] = t_alpha[x.e_idx]
             else:
                 raise ValueError(f"Key {key} not found in graph data.")
 
@@ -261,7 +253,7 @@ class FlowMolScheduler(Scheduler[DDGraph]):
     def _alpha_dot(self, x: DDGraph, t: torch.Tensor) -> torch.Tensor:
         out = torch.zeros(t.shape[0], len(self.schedulers), device=t.device, dtype=t.dtype)
         for idx, key in enumerate(self.scheduler_order):
-            val = self.schedulers[key].alpha_dot(DDTensor(torch.zeros(x.graph.batch_size, 1, device=x.device)), t)
+            val = self.schedulers[key].alpha_dot(DDTensor(torch.zeros(x.graph.num_graphs, 1, device=x.device)), t)
             out[:, idx] = val.data.squeeze(-1)
 
         return out
@@ -272,13 +264,15 @@ class FlowMolScheduler(Scheduler[DDGraph]):
         res = x._get_empty_graph()
 
         alpha_dots = self._alpha_dot(x, t)
+        node_feat_keys = {k for k, _ in _iter_node_features(g)}
+        edge_feat_keys = {k for k, _ in _iter_edge_features(g)}
         for idx, key in enumerate(self.scheduler_order):
-            if key in g.ndata:
+            if key in node_feat_keys:
                 t_alpha_dot = alpha_dots[:, idx].unsqueeze(-1)
-                res.ndata[key] = t_alpha_dot[x.n_idx]
-            elif key in g.edata:
+                res[key] = t_alpha_dot[x.n_idx]
+            elif key in edge_feat_keys:
                 t_alpha_dot = alpha_dots[:, idx].unsqueeze(-1)
-                res.edata[key] = t_alpha_dot[x.e_idx]
+                res[key] = t_alpha_dot[x.e_idx]
             else:
                 raise ValueError(f"Key {key} not found in graph data.")
 
@@ -290,7 +284,7 @@ class GEOMBaseModel(FlowMolBaseModel):
     """Pre-trained continuous flow matching model, trained on GEOM-Drugs."""
 
     def __init__(self, device: torch.device):
-        super().__init__("geom_gaussian", (1, 2, 2, 2), device)
+        super().__init__("flowmol3", (1, 2, 2, 2), device)
 
 
 @base_model_registry.register("molecules/flowmol_qm9")
