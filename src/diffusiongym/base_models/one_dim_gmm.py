@@ -42,11 +42,11 @@ class OneDimensionalBaseModel(BaseModel[DDTensor]):
 
         self._scheduler = scheduler
 
-        p1 = dist.MixtureSameFamily(  # type: ignore
-            dist.Categorical(torch.ones(2)),  # type: ignore
-            dist.Normal(torch.Tensor([0.0, 3.0]), torch.Tensor([1.0, 0.4])),  # type: ignore
+        p1 = dist.MixtureSameFamily(
+            dist.Categorical(torch.ones(2)),
+            dist.Normal(torch.Tensor([0.0, 3.0]), torch.Tensor([1.0, 0.4])),
         )
-        data = [DDTensor(p1.sample((4096, 1)).to(device))]  # type: ignore
+        data = [DDTensor(p1.sample((4096, 1)).to(device))]
 
         mlp = MLP(1, 1).to(device)
         opt = torch.optim.Adam(mlp.parameters(), lr=1e-3)

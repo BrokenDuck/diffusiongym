@@ -165,7 +165,7 @@ class TestDDGraphGetitem:
     def test_invalid_type_raises(self) -> None:
         ddg = _make_ddgraph([3])
         with pytest.raises(TypeError):
-            _ = ddg["bad"]  # type: ignore[index]
+            _ = ddg["bad"][index]
 
 
 # ---------------------------------------------------------------------------

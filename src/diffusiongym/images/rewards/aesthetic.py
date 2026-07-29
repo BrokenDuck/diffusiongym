@@ -4,7 +4,7 @@ import os
 from typing import Any
 from urllib.request import urlretrieve
 
-import open_clip  # type: ignore
+import open_clip
 import torch
 from PIL import Image
 from torch import nn
@@ -28,7 +28,7 @@ class AestheticReward(Reward[DDTensor]):
         )
         self.preprocess = transforms.Compose(
             [
-                transforms.Resize(224, interpolation=Image.BICUBIC, max_size=None, antialias=True),  # type: ignore
+                transforms.Resize(224, interpolation=Image.BICUBIC, max_size=None, antialias=True),
                 transforms.CenterCrop(224),
                 transforms.Normalize(
                     mean=(0.48145466, 0.4578275, 0.40821073),
@@ -46,7 +46,7 @@ class AestheticReward(Reward[DDTensor]):
         rewards = []
         for img_ in preprocessed_imgs:
             img = img_.to(self.device).unsqueeze(0)
-            img_feats = self.clip.encode_image(img)  # type: ignore
+            img_feats = self.clip.encode_image(img)
             img_feats /= img_feats.norm(dim=-1, keepdim=True)
             rewards.append(self.model(img_feats))
 

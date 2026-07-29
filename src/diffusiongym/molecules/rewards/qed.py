@@ -18,7 +18,7 @@ class QEDReward(Reward[DDGraph]):
     """QED reward for molecules."""
 
     def __init__(self) -> None:
-        RDLogger.DisableLog("rdApp.*")  # type: ignore
+        RDLogger.DisableLog("rdApp.*")
 
     def __call__(self, sample: DDGraph, latent: DDGraph, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
         mols = graph_to_mols(sample)

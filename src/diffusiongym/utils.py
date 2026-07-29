@@ -73,10 +73,10 @@ def index_dict(d: T, start: int, end: Optional[int] = None) -> T:
         idx = slice(start, end)
 
     if isinstance(d, dict):
-        return {k: index_dict(v, start, end) for k, v in d.items()}  # type: ignore
+        return {k: index_dict(v, start, end) for k, v in d.items()}
 
     if isinstance(d, (list, tuple, torch.Tensor)):
-        return d[idx]  # type: ignore
+        return d[idx]
 
     if isinstance(d, (float, int, str)):
         return d
@@ -106,7 +106,7 @@ def dict_to_device(d: T, device: torch.device | str) -> T:
         return [dict_to_device(v, device) for v in d]
 
     if isinstance(d, torch.Tensor):
-        return d.to(device)  # type: ignore
+        return d.to(device)
 
     if isinstance(d, (float, int, str)):
         return d
@@ -147,7 +147,7 @@ class ValuePolicy(nn.Module, Generic[D]):
         self.value_network = value_network
         self.noise_schedule = noise_schedule
 
-    @torch.enable_grad()  # type: ignore[no-untyped-call]
+    @torch.enable_grad()[no - untyped - call]
     def forward(self, x: D, t: torch.Tensor, **kwargs: Any) -> D:
         """Compute control action based on value function gradient."""
         x = x.requires_grad()
@@ -180,7 +180,7 @@ class DDDataset(Dataset[tuple[D, dict[str, Any], torch.Tensor]]):
             for i in range(len(d)):
                 all_kwargs.append(index_dict(k, i))
 
-        self.kwargs: dict = default_collate(all_kwargs)  # type: ignore
+        self.kwargs: dict = default_collate(all_kwargs)
 
     def __len__(self) -> int:
         return len(self.data)
@@ -189,7 +189,7 @@ class DDDataset(Dataset[tuple[D, dict[str, Any], torch.Tensor]]):
         if self.kwargs is None:
             return self.data[idx], {}, self.weights[idx]
 
-        return self.data[idx], index_dict(self.kwargs, idx), self.weights[idx]  # type: ignore
+        return self.data[idx], index_dict(self.kwargs, idx), self.weights[idx]
 
     def collate(self, batch):
         data_batch, kwargs_batch, weight_batch = zip(*batch)

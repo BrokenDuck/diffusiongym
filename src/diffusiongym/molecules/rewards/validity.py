@@ -17,7 +17,7 @@ class ValidityReward(Reward[DDGraph]):
     """Validity reward for molecules. It is 1 if chemically valid and no fragmentation, else 0."""
 
     def __init__(self) -> None:
-        RDLogger.DisableLog("rdApp.*")  # type: ignore
+        RDLogger.DisableLog("rdApp.*")
 
     def __call__(self, sample: DDGraph, latent: DDGraph, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
         mols = graph_to_mols(sample)

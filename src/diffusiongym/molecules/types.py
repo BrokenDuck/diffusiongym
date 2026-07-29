@@ -149,7 +149,7 @@ class DDGraph(DDMixin):
         empty.num_nodes = self.graph.num_nodes
         empty.batch = self.graph.batch
         empty.ptr = self.graph.ptr
-        empty._num_graphs = self.graph.num_graphs  # type: ignore[attr-defined]
+        empty._num_graphs = self.graph.num_graphs[attr - defined]
         return empty
 
     def apply(self, op: UnaryOp) -> Self:
@@ -170,22 +170,22 @@ class DDGraph(DDMixin):
             for key, val in _iter_node_features(self.graph):
                 other_val = other.graph[key] if hasattr(other.graph, key) else None
                 if other_val is not None and isinstance(other_val, torch.Tensor):
-                    res[key] = op(val, other_val)  # type: ignore[arg-type]
+                    res[key] = op(val, other_val)[arg - type]
                 else:
                     res[key] = val
 
             for key, val in _iter_edge_features(self.graph):
                 other_val = other.graph[key] if hasattr(other.graph, key) else None
                 if other_val is not None and isinstance(other_val, torch.Tensor):
-                    res[key] = op(val, other_val)  # type: ignore[arg-type]
+                    res[key] = op(val, other_val)[arg - type]
                 else:
                     res[key] = val
         else:
             for key, val in _iter_node_features(self.graph):
-                res[key] = op(val, other)  # type: ignore[arg-type]
+                res[key] = op(val, other)[arg - type]
 
             for key, val in _iter_edge_features(self.graph):
-                res[key] = op(val, other)  # type: ignore[arg-type]
+                res[key] = op(val, other)[arg - type]
 
         return self.__class__(res, self.ue_mask, self.n_idx, self.e_idx)
 

@@ -28,7 +28,7 @@ class XTBReward(Reward[DDGraph]):
     invalid_val = 0.0
 
     def __init__(self, attr_name: str, do_relax: bool = True):
-        RDLogger.DisableLog("rdApp.*")  # type: ignore
+        RDLogger.DisableLog("rdApp.*")
         self.attr_name = attr_name
         self.relax = safe_mmff_relax if do_relax else identity_fn
 

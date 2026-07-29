@@ -167,5 +167,5 @@ class Registry(Generic[T]):
 
 
 # Global registries
-base_model_registry = Registry("BASE_MODEL_REGISTRY")  # type: ignore
-reward_registry = Registry("REWARD_REGISTRY")  # type: ignore
+base_model_registry = Registry("BASE_MODEL_REGISTRY")
+reward_registry = Registry("REWARD_REGISTRY")

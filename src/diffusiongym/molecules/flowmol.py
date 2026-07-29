@@ -189,11 +189,11 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
         g = pred.graph
 
         # Compute per-node/edge losses without mutating pred.graph
-        loss_x = F.mse_loss(g.x_t, x1.graph.x_t, reduction="none").mean(dim=-1)  # type: ignore[operator]
-        loss_a = F.cross_entropy(g.a_t, x1.graph.a_t.argmax(dim=-1), reduction="none")  # type: ignore[operator]
-        loss_c = F.cross_entropy(g.c_t, x1.graph.c_t.argmax(dim=-1), reduction="none")  # type: ignore[operator]
+        loss_x = F.mse_loss(g.x_t, x1.graph.x_t, reduction="none").mean(dim=-1)[operator]
+        loss_a = F.cross_entropy(g.a_t, x1.graph.a_t.argmax(dim=-1), reduction="none")[operator]
+        loss_c = F.cross_entropy(g.c_t, x1.graph.c_t.argmax(dim=-1), reduction="none")[operator]
         # todo: only over upper edge
-        loss_e = F.cross_entropy(g.e_t, x1.graph.e_t.argmax(dim=-1), reduction="none")  # type: ignore[operator]
+        loss_e = F.cross_entropy(g.e_t, x1.graph.e_t.argmax(dim=-1), reduction="none")[operator]
 
         losses = {
             "x": global_mean_pool(loss_x.unsqueeze(-1), pred.n_idx).squeeze(-1),

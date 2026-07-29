@@ -52,11 +52,11 @@ def is_valid(mol: Chem.Mol) -> bool:
         Chem.AssignStereochemistryFrom3D(mol)
 
         for a in mol.GetAtoms():
-            a.SetNoImplicit(True)  # type: ignore
+            a.SetNoImplicit(True)
             if a.HasProp("_MolFileHCount"):
                 a.ClearProp("_MolFileHCount")
 
-        flags = Chem.SanitizeFlags.SANITIZE_ALL & ~Chem.SanitizeFlags.SANITIZE_ADJUSTHS  # type: ignore
+        flags = Chem.SanitizeFlags.SANITIZE_ALL & ~Chem.SanitizeFlags.SANITIZE_ADJUSTHS
 
         # Full sanitization, minus ADJUSTHS
         err = Chem.SanitizeMol(
@@ -108,7 +108,7 @@ def safe_mmff_relax(mol: Chem.Mol) -> Chem.Mol | None:
         The relaxed molecule, or None if the relaxation failed.
     """
     try:
-        AllChem.MMFFOptimizeMolecule(mol)  # type: ignore
+        AllChem.MMFFOptimizeMolecule(mol)
         return mol
     except RuntimeError as e:
         if "Invariant Violation" in str(e):

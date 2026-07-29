@@ -128,7 +128,7 @@ class Sample(Generic[D]):
             rewards=torch.cat([x.rewards for x in samples], dim=0),
             valids=torch.cat([x.valids for x in samples], dim=0),
             cost_functionals=torch.cat([x.cost_functionals for x in samples], dim=1),
-            kwargs=default_collate(all_kwargs),  # type: ignore
+            kwargs=default_collate(all_kwargs),
         )
 
 
