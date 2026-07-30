@@ -1,12 +1,12 @@
 """Custom types for diffusiongym."""
 
-from typing import Callable, Protocol, Sequence, TypeVar, Union
+from typing import Callable, Protocol, Self, Sequence, TypeVar
 
 import torch
-from typing_extensions import Self
 
-UnaryOp = Callable[[torch.Tensor], torch.Tensor]
-BinaryOp = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+type UnaryOp = Callable[[torch.Tensor], torch.Tensor]
+type BinaryOp = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
 D = TypeVar("D", bound="DDMixin")
 
 
@@ -14,7 +14,7 @@ class DDProtocol(Protocol):
     """Diffusion data protocol."""
 
     def __len__(self) -> int: ...
-    def __getitem__(self, idx: Union[int, slice]) -> Self: ...
+    def __getitem__(self, idx: int | slice) -> Self: ...
 
     @classmethod
     def collate(cls: type[Self], items: Sequence[Self]) -> Self: ...
@@ -75,7 +75,10 @@ class DDMixin(DDProtocol):
     def to(self, device: torch.device | str) -> Self:
         return self.apply(lambda x: x.to(device))
 
-    def _binary_dispatch(self, other: Union[Self, float, torch.Tensor], op: BinaryOp) -> Self:
+    def cpu(self) -> Self:
+        return self.apply(lambda x: x.cpu())
+
+    def _binary_dispatch(self, other: Self | float | torch.Tensor, op: BinaryOp) -> Self:
         if isinstance(other, torch.Tensor):
             return self.apply(lambda x: op(x, other))
 
@@ -113,6 +116,9 @@ class DDMixin(DDProtocol):
 
     def __rmul__(self, other):
         return self._binary_dispatch(other, lambda x, y: torch.mul(y, x))
+
+    def square(self) -> Self:
+        return self * self
 
     def randn_like(self) -> Self:
         def randn_like_to_float(x: torch.Tensor) -> torch.Tensor:
@@ -205,7 +211,7 @@ class DDTensor(DDMixin):
     def __len__(self) -> int:
         return self.data.shape[0]
 
-    def __getitem__(self, idx: Union[int, slice]) -> Self:
+    def __getitem__(self, idx: int | slice) -> Self:
         data_out = self.data[idx]
 
         if data_out.ndim < self.data.ndim:
@@ -237,5 +243,5 @@ class DDTensor(DDMixin):
     def apply(self, op: UnaryOp) -> Self:
         return self.__class__(op(self.data))
 
-    def combine(self, other: Self, op: BinaryOp) -> Self:
+    def combine(self, other: Self, op: BinaryOp) -> Self:  # ty:ignore[invalid-method-override]
         return self.__class__(op(self.data, other.data))

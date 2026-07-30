@@ -1,6 +1,6 @@
 """Pre-trained base model for CIFAR-10."""
 
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from diffusers.pipelines.ddpm.pipeline_ddpm import DDPMPipeline
@@ -32,7 +32,7 @@ class CIFARBaseModel(BaseModel[DDTensor]):
 
     output_type = "epsilon"
 
-    def __init__(self, device: Optional[torch.device]):
+    def __init__(self, device: torch.device | None):
         super().__init__(device)
 
         pipe = DDPMPipeline.from_pretrained("google/ddpm-cifar10-32").to(device)
@@ -46,7 +46,7 @@ class CIFARBaseModel(BaseModel[DDTensor]):
         """Scheduler used for sampling."""
         return self._scheduler
 
-    def sample_p0(self, n: int, **kwargs: Any) -> tuple[DDTensor, dict[str, Any]]:
+    def sample_p0(self, n: int, **kwargs) -> tuple[DDTensor, dict[str, Any]]:
         """Sample n datapoints from the base distribution :math:`p_0`.
 
         Parameters
@@ -80,7 +80,7 @@ class CIFARBaseModel(BaseModel[DDTensor]):
         """
         return DDTensor(((x.data + 1) / 2).clamp(0, 1))
 
-    def forward(self, x: DDTensor, t: torch.Tensor, **kwargs: Any) -> DDTensor:
+    def forward(self, x: DDTensor, t: torch.Tensor, **kwargs) -> DDTensor:
         r"""Forward pass of the model, outputting :math:`\epsilon(x_t, t)`.
 
         Parameters

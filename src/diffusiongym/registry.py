@@ -1,11 +1,9 @@
 """Registry system for base models and rewards."""
 
-from typing import Any, Callable, Generic, List, TypeVar, overload
-
-T = TypeVar("T")
+from typing import Any, Callable, overload
 
 
-class RegistryEntry(Generic[T]):
+class RegistryEntry[T]:
     """Entry in a registry containing the class and metadata.
 
     Parameters
@@ -37,7 +35,7 @@ class RegistryEntry(Generic[T]):
         return self.cls(**kwargs)
 
 
-class Registry(Generic[T]):
+class Registry[T]:
     """Generic registry for mapping string identifiers to classes.
 
     Parameters
@@ -140,7 +138,7 @@ class Registry(Generic[T]):
 
         return self._registry[id]
 
-    def list(self) -> List[str]:
+    def list(self) -> list[str]:
         """List all registered IDs.
 
         Returns

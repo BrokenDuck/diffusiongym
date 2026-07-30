@@ -1,7 +1,6 @@
 """LAION aesthetic score reward."""
 
 import os
-from typing import Any
 from urllib.request import urlretrieve
 
 import open_clip
@@ -28,7 +27,7 @@ class AestheticReward(Reward[DDTensor]):
         )
         self.preprocess = transforms.Compose(
             [
-                transforms.Resize(224, interpolation=Image.BICUBIC, max_size=None, antialias=True),
+                transforms.Resize(224, interpolation=Image.Resampling.BICUBIC, max_size=None, antialias=True),
                 transforms.CenterCrop(224),
                 transforms.Normalize(
                     mean=(0.48145466, 0.4578275, 0.40821073),
@@ -37,7 +36,7 @@ class AestheticReward(Reward[DDTensor]):
             ]
         )
 
-    def __call__(self, sample: DDTensor, latent: DDTensor, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
+    def __call__(self, sample: DDTensor, latent: DDTensor, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute the aesthetic score for a batch of images."""
         if sample.data.min() < 0 or sample.data.max() > 1:
             raise ValueError(f"`sample` must have values in [0, 1], got [{sample.data.min()}, {sample.data.max()}]")

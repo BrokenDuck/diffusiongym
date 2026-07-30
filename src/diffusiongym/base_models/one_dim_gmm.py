@@ -1,19 +1,18 @@
 """Base model for 1D Gaussian mixture model (GMM)."""
 
 import math
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.distributions as dist
 import torch.nn.functional as F
 from torch import nn
 
+from diffusiongym.base_models.base import BaseModel
 from diffusiongym.registry import base_model_registry
 from diffusiongym.schedulers import OptimalTransportScheduler, Scheduler
 from diffusiongym.types import DDTensor
 from diffusiongym.utils import append_dims, train_base_model
-
-from .base import BaseModel
 
 
 @base_model_registry.register("1d/gmm")
@@ -27,8 +26,8 @@ class OneDimensionalBaseModel(BaseModel[DDTensor]):
 
     def __init__(
         self,
-        device: Optional[torch.device],
-        scheduler: Optional[Scheduler[DDTensor]] = None,
+        device: torch.device | None,
+        scheduler: Scheduler[DDTensor] | None = None,
     ):
         super().__init__(device)
 
@@ -57,7 +56,7 @@ class OneDimensionalBaseModel(BaseModel[DDTensor]):
         """Optimal transport scheduler."""
         return self._scheduler
 
-    def sample_p0(self, n: int, **kwargs: Any) -> tuple[DDTensor, dict[str, Any]]:
+    def sample_p0(self, n: int, **kwargs) -> tuple[DDTensor, dict[str, Any]]:
         """Sample n data points from the base distribution p0.
 
         Parameters
@@ -76,7 +75,7 @@ class OneDimensionalBaseModel(BaseModel[DDTensor]):
         """
         return DDTensor(torch.randn(n, 1, device=self.device)), kwargs
 
-    def forward(self, x: DDTensor, t: torch.Tensor, **kwargs: Any) -> DDTensor:
+    def forward(self, x: DDTensor, t: torch.Tensor, **kwargs) -> DDTensor:
         """Forward pass of the base model.
 
         Parameters

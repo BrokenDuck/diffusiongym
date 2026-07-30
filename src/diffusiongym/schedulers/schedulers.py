@@ -1,13 +1,10 @@
 """Common schedulers for flow matching and diffusion models."""
 
-from typing import cast
-
 import torch
 
+from diffusiongym.schedulers.base import Scheduler
 from diffusiongym.types import DDTensor
 from diffusiongym.utils import append_dims
-
-from .base import Scheduler
 
 
 class OptimalTransportScheduler(Scheduler[DDTensor]):
@@ -63,8 +60,7 @@ class DiffusionScheduler(Scheduler[DDTensor]):
         self.alpha_bar_dot = self.K * (self.alpha_bar_shifted - self.alpha_bar)
 
     def _get_index(self, t: torch.Tensor) -> torch.Tensor:
-        k = ((1 - t) * self.K + 0.5).long().clamp(0, self.K).cpu()
-        return cast("torch.Tensor", k)
+        return ((1 - t) * self.K + 0.5).long().clamp(0, self.K).cpu()
 
     def model_input(self, t: torch.Tensor) -> torch.Tensor:
         """Input to the model at time t that encodes the timestep."""

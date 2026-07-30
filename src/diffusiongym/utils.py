@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Generator, Generic, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Generator
 
 import torch
 from torch import nn
@@ -13,17 +13,14 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data._utils.collate import default_collate
 from tqdm import tqdm
 
-from diffusiongym.types import D
+from diffusiongym.schedulers import NoiseSchedule
+from diffusiongym.types import DDMixin
 
 if TYPE_CHECKING:
     from diffusiongym.base_models import BaseModel
-    from diffusiongym.schedulers import NoiseSchedule
 
 
-T = TypeVar("T")
-
-
-def identity_fn(x: T) -> T:
+def identity_fn[T](x: T) -> T:
     """Identity function."""
     return x
 
@@ -50,7 +47,7 @@ def append_dims(x: torch.Tensor, ndim: int) -> torch.Tensor:
     return x.view(shape)
 
 
-def index_dict(d: T, start: int, end: Optional[int] = None) -> T:
+def index_dict[T](d: T, start: int, end: int | None = None) -> T:
     """Recursively index into the leaves of a nested dictionary.
 
     Parameters
@@ -73,10 +70,10 @@ def index_dict(d: T, start: int, end: Optional[int] = None) -> T:
         idx = slice(start, end)
 
     if isinstance(d, dict):
-        return {k: index_dict(v, start, end) for k, v in d.items()}
+        return {k: index_dict(v, start, end) for k, v in d.items()}  # ty:ignore[invalid-return-type]
 
     if isinstance(d, (list, tuple, torch.Tensor)):
-        return d[idx]
+        return d[idx]  # ty:ignore[invalid-return-type]
 
     if isinstance(d, (float, int, str)):
         return d
@@ -84,7 +81,7 @@ def index_dict(d: T, start: int, end: Optional[int] = None) -> T:
     raise TypeError(f"Unsupported leaf type: {type(d)}")
 
 
-def dict_to_device(d: T, device: torch.device | str) -> T:
+def dict_to_device[T](d: T, device: torch.device | str) -> T:
     """Recursively move the leaves of a nested dictionary to a specified device.
 
     Parameters
@@ -100,13 +97,13 @@ def dict_to_device(d: T, device: torch.device | str) -> T:
         If d is a dictionary, returns a dictionary with the same keys and device-moved leaves.
     """
     if isinstance(d, dict):
-        return {k: dict_to_device(v, device) for k, v in d.items()}
+        return {k: dict_to_device(v, device) for k, v in d.items()}  # ty:ignore[invalid-return-type]
 
     if isinstance(d, list):
-        return [dict_to_device(v, device) for v in d]
+        return [dict_to_device(v, device) for v in d]  # ty:ignore[invalid-return-type]
 
     if isinstance(d, torch.Tensor):
-        return d.to(device)
+        return d.to(device)  # ty:ignore[invalid-return-type]
 
     if isinstance(d, (float, int, str)):
         return d
@@ -130,7 +127,7 @@ def temporary_workdir() -> Generator[str, None, None]:
             os.chdir(old_cwd)
 
 
-class ValuePolicy(nn.Module, Generic[D]):
+class ValuePolicy[D: DDMixin](nn.Module):
     r"""Policy based on a value function, :math:`u(x, t) = -\sigma(t) \nabla_x V(x, t)`.
 
     Parameters
@@ -147,8 +144,8 @@ class ValuePolicy(nn.Module, Generic[D]):
         self.value_network = value_network
         self.noise_schedule = noise_schedule
 
-    @torch.enable_grad()[no - untyped - call]
-    def forward(self, x: D, t: torch.Tensor, **kwargs: Any) -> D:
+    @torch.enable_grad()
+    def forward(self, x: D, t: torch.Tensor, **kwargs) -> D:
         """Compute control action based on value function gradient."""
         x = x.requires_grad()
         value_pred = self.value_network(x, t, **kwargs)
@@ -157,7 +154,7 @@ class ValuePolicy(nn.Module, Generic[D]):
         return control
 
 
-class DDDataset(Dataset[tuple[D, dict[str, Any], torch.Tensor]]):
+class DDDataset[D: DDMixin](Dataset[tuple[D, dict[str, Any], torch.Tensor]]):
     """Dataset wrapper for diffusiongym data."""
 
     def __init__(self, data: list[D], kwargs: list[dict[str, Any]] | None, weights: list[torch.Tensor] | None):
@@ -176,7 +173,7 @@ class DDDataset(Dataset[tuple[D, dict[str, Any], torch.Tensor]]):
             kwargs = [{}] * len(data)
 
         all_kwargs = []
-        for d, k in zip(data, kwargs):
+        for d, k in zip(data, kwargs, strict=False):
             for i in range(len(d)):
                 all_kwargs.append(index_dict(k, i))
 
@@ -185,26 +182,26 @@ class DDDataset(Dataset[tuple[D, dict[str, Any], torch.Tensor]]):
     def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(self, idx: int) -> tuple[D, dict[str, Any], torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[D, dict[str, Any], torch.Tensor]:  # ty:ignore[invalid-method-override]
         if self.kwargs is None:
             return self.data[idx], {}, self.weights[idx]
 
         return self.data[idx], index_dict(self.kwargs, idx), self.weights[idx]
 
     def collate(self, batch):
-        data_batch, kwargs_batch, weight_batch = zip(*batch)
+        data_batch, kwargs_batch, weight_batch = zip(*batch, strict=False)
         data_batch = type(data_batch[0]).collate(list(data_batch))
         kwargs_batch = default_collate(kwargs_batch)
         weight_batch = default_collate(weight_batch)
         return data_batch, kwargs_batch, weight_batch
 
 
-def train_base_model(
+def train_base_model[D: DDMixin](
     base_model: BaseModel[D],
     opt: torch.optim.Optimizer,
     data: list[D],
-    kwargs: Optional[list[dict]] = None,
-    weights: Optional[list[torch.Tensor]] = None,
+    kwargs: list[dict] | None = None,
+    weights: list[torch.Tensor] | None = None,
     steps: int = 1000,
     batch_size: int = 64,
     accumulate_steps: int = 1,

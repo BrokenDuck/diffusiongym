@@ -14,7 +14,7 @@ from diffusiongym.environments import (
 )
 from diffusiongym.registry import base_model_registry, reward_registry
 from diffusiongym.rewards import Reward
-from diffusiongym.types import D
+from diffusiongym.types import DDMixin
 
 
 def make(
@@ -95,7 +95,7 @@ def make(
     return construct_env(base_model_inst, reward_inst, discretization_steps, reward_scale)
 
 
-def construct_env(
+def construct_env[D: DDMixin](
     base_model: BaseModel[D],
     reward: Reward[D],
     discretization_steps: int,

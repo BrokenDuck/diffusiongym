@@ -2,8 +2,9 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import StrEnum, auto
 from itertools import pairwise
-from typing import Any, Generic, Iterable, Optional, Protocol
+from typing import Any, Protocol
 
 import torch
 from torch.utils.data._utils.collate import default_collate
@@ -12,12 +13,21 @@ from tqdm.auto import tqdm, trange
 from diffusiongym.base_models import BaseModel
 from diffusiongym.rewards import Reward
 from diffusiongym.schedulers import MemorylessNoiseSchedule, Scheduler
-from diffusiongym.types import D
+from diffusiongym.types import DDMixin
 from diffusiongym.utils import dict_to_device, index_dict
 
 
+class EnvironmentMode(StrEnum):
+    """How the environment's drift and control cost are used."""
+
+    BASE_INFERENCE = auto()
+    POLICY_INFERENCE = auto()
+    ADJOINT_MATCHING = auto()
+    KL_REGULARIZED_RL = auto()
+
+
 @dataclass
-class Sample(Generic[D]):
+class Sample[D: DDMixin]:
     """A convenience wrapper for a batch of samples.
 
     Parameters
@@ -132,14 +142,20 @@ class Sample(Generic[D]):
         )
 
 
-class Policy(Protocol[D]):
+class Policy[D: DDMixin](Protocol):
     """General protocol for a policy function."""
 
-    def __call__(self, x: D, t: torch.Tensor, **kwargs: Any) -> D: ...
+    def __call__(self, x: D, t: torch.Tensor, **kwargs) -> D: ...
 
 
-class Environment(ABC, Generic[D]):
+class Environment[D: DDMixin](ABC):
     """Abstract base class for all environments.
+
+    The current policy may be represented by:
+
+    1. ``self.policy`` predicting the same quantity as ``base_model``;
+    2. ``self.control_policy`` directly predicting an additive SDE control;
+    3. both, in which case their reference-relative controls are added.
 
     Parameters
     ----------
@@ -152,7 +168,11 @@ class Environment(ABC, Generic[D]):
     reward_scale : float, default=1.0
         Scale of the reward (can be negative). This is used to control trade-off between high rewards
         and proximity to base model.
+    mode : EnvironmentMode, default=EnvironmentMode.BASE_INFERENCE
+        How the environment's drift and control cost are used.
     """
+
+    _SIGMA_EPS = 1e-8
 
     def __init__(
         self,
@@ -160,14 +180,17 @@ class Environment(ABC, Generic[D]):
         reward: Reward[D],
         discretization_steps: int,
         reward_scale: float = 1.0,
+        *,
+        mode: EnvironmentMode = EnvironmentMode.BASE_INFERENCE,
     ):
         self.base_model = base_model
         self.reward = reward
         self.discretization_steps = discretization_steps
         self.reward_scale = reward_scale
-        self._policy: Optional[Policy[D]] = None
-        self._control_policy: Optional[Policy[D]] = None
+        self.policy: Policy[D] | None = None
+        self.control_policy: Policy[D] | None = None
         self.memoryless_schedule = MemorylessNoiseSchedule(self.scheduler)
+        self.mode = mode
 
     @property
     def device(self) -> torch.device:
@@ -179,88 +202,174 @@ class Environment(ABC, Generic[D]):
         """Get the scheduler of the base model."""
         return self.base_model.scheduler
 
-    @property
-    def policy(self) -> Policy[D]:
-        """Current policy (replacement of base model) of the environment."""
-        if self._policy is None:
-            return self.base_model
-
-        return self._policy
-
-    @policy.setter
-    def policy(self, policy: Policy[D]) -> None:
-        """Set the current policy of the environment."""
-        self._policy = policy
-
-    @property
-    def is_policy_set(self) -> bool:
-        """Whether a custom policy has been set."""
-        return self._policy is not None
-
-    @property
-    def control_policy(self) -> Optional[Policy[D]]:
-        """Current control policy u(x, t) of the environment."""
-        return self._control_policy
-
-    @control_policy.setter
-    def control_policy(self, control_policy: Optional[Policy[D]]) -> None:
-        """Set the current control policy of the environment."""
-        self._control_policy = control_policy
-
-    @property
-    def is_control_policy_set(self) -> bool:
-        """Whether a custom policy has been set."""
-        return self.control_policy is not None
+    # ------------------------------------------------------------------
+    # Abstract interface: subclasses implement these two methods
+    # ------------------------------------------------------------------
 
     @abstractmethod
-    def pred_final(
+    def drift_from_prediction(
         self,
         x: D,
         t: torch.Tensor,
-        **kwargs: Any,
+        prediction: D,
     ) -> D:
-        """Compute the final state prediction from the current state.
+        """Convert one model prediction into the complete SDE drift.
 
-        Parameters
-        ----------
-        x : D
-            The current state.
-        t : torch.Tensor, shape (n,)
-            The current time step in [0, 1].
-        **kwargs : dict
-            Keyword arguments to the model.
-
-        Returns
-        -------
-        final : D
-            The predicted final state from state x and time t.
+        This must account for the scheduler's current diffusion coefficient.
+        It must not assume that the prediction comes from the base model.
         """
 
     @abstractmethod
+    def control_from_prediction_delta(
+        self,
+        x: D,
+        t: torch.Tensor,
+        prediction_delta: D,
+    ) -> D:
+        r"""Convert ``policy_prediction - base_prediction`` into SDE control.
+
+        It must satisfy
+
+            drift(policy_prediction)
+            =
+            drift(base_prediction)
+            + sigma \* control_from_prediction_delta(delta).
+        """
+
+    # ------------------------------------------------------------------
+    # Public drift API
+    # ------------------------------------------------------------------
+
+    def reference_drift(
+        self,
+        x: D,
+        t: torch.Tensor,
+        **kwargs,
+    ) -> D:
+        """Frozen reference drift.
+
+        Use this for the lean-adjoint dynamics in Adjoint Matching.
+        Do not wrap this method in ``torch.no_grad()``, because the adjoint
+        requires derivatives with respect to ``x``.
+        """
+        base_prediction = self.base_model.forward(x, t, **kwargs)
+        return self.drift_from_prediction(x, t, base_prediction)
+
+    def current_drift(
+        self,
+        x: D,
+        t: torch.Tensor,
+        **kwargs,
+    ) -> D:
+        """Drift used to generate the current rollout."""
+        base_prediction = self.base_model.forward(x, t, **kwargs)
+
+        if self.mode is EnvironmentMode.BASE_INFERENCE:
+            return self.drift_from_prediction(x, t, base_prediction)
+
+        if self.policy is not None:
+            current_prediction = self.policy(x, t, **kwargs)
+        else:
+            current_prediction = base_prediction
+
+        drift = self.drift_from_prediction(x, t, current_prediction)
+
+        if self.control_policy is not None:
+            sigma = self.scheduler.sigma(x, t)
+            direct_control = self.control_policy(x, t, **kwargs)
+            drift = drift + sigma * direct_control
+
+        return drift
+
+    def reference_relative_control(
+        self,
+        x: D,
+        t: torch.Tensor,
+        **kwargs,
+    ) -> D:
+        """Return the total current-policy control relative to the base model.
+
+        This is used for:
+
+        - path-space KL regularization;
+        - Adjoint Matching control targets;
+        - diagnostics.
+
+        It is not added again after ``current_drift`` has already used the
+        native policy prediction.
+        """
+        sigma = self.scheduler.sigma(x, t)
+        self._require_stochastic_schedule(sigma)
+
+        total_control = x.zeros_like()
+        base_prediction = self.base_model.forward(x, t, **kwargs)
+
+        if self.policy is not None:
+            policy_prediction = self.policy(x, t, **kwargs)
+            prediction_delta = policy_prediction - base_prediction
+
+            total_control = total_control + self.control_from_prediction_delta(
+                x,
+                t,
+                prediction_delta,
+            )
+
+        if self.control_policy is not None:
+            total_control = total_control + self.control_policy(x, t, **kwargs)
+
+        return total_control
+
     def drift(
         self,
         x: D,
         t: torch.Tensor,
-        **kwargs: Any,
+        **kwargs,
     ) -> tuple[D, torch.Tensor]:
-        """Compute the drift term of the environment's dynamics.
+        """Return rollout drift and the relevant control-energy cost."""
+        if self.mode is EnvironmentMode.ADJOINT_MATCHING:
+            self._require_memoryless_schedule(x, t)
 
-        Parameters
-        ----------
-        x : D
-            The current state.
-        t : torch.Tensor, shape (n,)
-            The current time step in [0, 1].
-        **kwargs : dict
-            Keyword arguments to the model.
+        drift = self.current_drift(x, t, **kwargs)
 
-        Returns
-        -------
-        drift : D
-            The drift term at state x and time t.
-        running_cost : torch.Tensor, shape (n,)
-            Running cost :math:`L(x_t, t)` of the policy for the given (state, timestep)-pair.
-        """
+        if self.mode in {
+            EnvironmentMode.ADJOINT_MATCHING,
+            EnvironmentMode.KL_REGULARIZED_RL,
+        }:
+            control = self.reference_relative_control(x, t, **kwargs)
+            running_cost = 0.5 * control.square().aggregate("sum")
+        else:
+            running_cost = 0.5 * x.zeros_like().square().aggregate("sum")
+
+        return drift, running_cost
+
+    # ------------------------------------------------------------------
+    # Schedule validation
+    # ------------------------------------------------------------------
+
+    def _require_memoryless_schedule(
+        self,
+        x: D,
+        t: torch.Tensor,
+    ) -> None:
+        eta = self.scheduler.eta(x, t)
+        sigma = self.scheduler.sigma(x, t)
+
+        if not torch.allclose(
+            sigma.square().aggregate("sum"),
+            (2.0 * eta).aggregate("sum"),
+            rtol=1e-5,
+            atol=1e-7,
+        ):
+            raise RuntimeError("Adjoint Matching requires the memoryless schedule sigma**2 == 2 * eta.")
+
+    @staticmethod
+    def _require_stochastic_schedule(sigma: D) -> None:
+        if torch.any(sigma.aggregate("sum").abs() <= Environment._SIGMA_EPS):
+            raise ValueError(
+                "Reference-relative control is undefined where sigma == 0. "
+                "Use interior stochastic training times. Deterministic "
+                "inference does not require computing this control."
+            )
 
     def diffusion(self, x: D, t: torch.Tensor) -> D:
         """Compute the diffusion term of the environment's dynamics.
@@ -284,8 +393,8 @@ class Environment(ABC, Generic[D]):
         self,
         n: int,
         pbar: bool = True,
-        x0: Optional[D] = None,
-        **kwargs: Any,
+        x0: D | None = None,
+        **kwargs,
     ) -> Sample[D]:
         r"""Sample n trajectories from the environment.
 
@@ -306,60 +415,87 @@ class Environment(ABC, Generic[D]):
         Sample[D]
             A Sample object containing the sampled trajectories and associated data.
         """
-        x, kwargs = self.base_model.sample_p0(n, **kwargs)
+        device = self.base_model.device
+
+        ### Prepare for the foward SDE Pass ###
+
+        latent, kwargs = self.base_model.sample_p0(n, **kwargs)
 
         # Set initial state if provided
         if x0 is not None:
-            x = x0.to(self.base_model.device)
+            if len(x0) != n:
+                raise ValueError(f"x0 contains {len(x0)} stats, but n={n}")
+            latent = x0.to(device)
 
-        x, kwargs = self.base_model.preprocess(x, **kwargs)
+        latent, kwargs = self.base_model.preprocess(latent, **kwargs)
 
-        trajectory = [x.to("cpu")]
-        drifts = []
-        diffusions = []
-        noises = []
-        running_costs = torch.zeros(self.discretization_steps, n)
+        ### Run Euler-Maruyama Forward Pass ###
 
-        # Start at a very small number, instead of 0, to avoid singularities
-        t = torch.linspace(2e-2, 1, self.discretization_steps + 1)
-        iterator: Iterable[tuple[int, tuple[Any, Any]]] = enumerate(pairwise(t))
-        if pbar:
-            iterator = tqdm(iterator, total=self.discretization_steps)
+        # Discrete time steps at which we advance
+        timesteps = torch.linspace(0.0, 1.0, self.discretization_steps + 1, device=device)
 
-        for i, (t0, t1) in iterator:
+        trajectory = [latent.detach().cpu()]  # Sample at each time step
+        drifts = []  # Drift term at each time step
+        diffusions = []  # Diffusion coeficient at each time step
+        noises = []  # Sampled SDE noise at each time step
+
+        running_costs = torch.zeros(self.discretization_steps, n, device=device)
+
+        iterator = enumerate(pairwise(timesteps))
+        for i, (t0, t1) in tqdm(iterator, total=self.discretization_steps) if pbar else iterator:
             dt = t1 - t0
-            t_curr = t0 * torch.ones(n, device=self.base_model.device)
+
+            # To prevent anomalies, we do not evaluate at 0 but at 0.02
+            t_eval = t0.clamp_min(2e-2)
+            t_curr = t_eval.expand(n)
 
             # Discrete step of SDE
-            drift, running_cost = self.drift(x, t_curr, **kwargs)
-            diffusion = self.diffusion(x, t_curr)
-            epsilon = x.randn_like()
-            x += dt * drift + torch.sqrt(dt) * diffusion * epsilon
+            drift, running_cost = self.drift(latent, t_curr, **kwargs)
+            diffusion = self.diffusion(latent, t_curr)
+            epsilon = latent.randn_like()
+            latent += dt * drift + torch.sqrt(dt) * diffusion * epsilon
 
-            running_costs[i] = running_cost
-            trajectory.append(x.detach().to("cpu"))
-            drifts.append(drift.detach().to("cpu"))
-            diffusions.append(diffusion.detach().to("cpu"))
-            noises.append(epsilon.detach().to("cpu"))
+            # Integrate the running cost
+            running_costs[i] = dt * running_cost
 
-        sample = self.base_model.postprocess(x)
-        rewards, valids = self.reward(sample, x, **kwargs)
+            trajectory.append(latent.detach().cpu())
+            drifts.append(drift.detach().cpu())
+            diffusions.append(diffusion.detach().cpu())
+            noises.append(epsilon.detach().cpu())
 
-        rewards = rewards.cpu()
-        valids = valids.cpu()
+        ### Postprocessing to obtain the final samples
+
+        sample = self.base_model.postprocess(latent)
+        rewards, valids = self.reward(sample, latent, **kwargs)
+
+        ### Compute Costs ###
+
+        # Discrete approximation of equation 9
         costs = torch.cat(
             [
-                running_costs / self.discretization_steps,
+                running_costs,
                 -self.reward_scale * rewards.unsqueeze(0),
             ],
             dim=0,
         )
-        # Reverse cumulative sum
-        costs = costs.flip(0).cumsum(0).flip(0)
-        kwargs = dict_to_device(kwargs, "cpu")
-        return Sample(sample.to("cpu"), x.to("cpu"), trajectory, t, drifts, diffusions, noises, running_costs, rewards, valids, costs, kwargs)
+        cost_functionals = costs.flip(0).cumsum(0).flip(0)
 
-    def batch_sample(self, n: int, batch_size: int, pbar: bool = False, **kwargs: Any) -> Sample[D]:
+        return Sample(
+            sample=sample.detach().cpu(),
+            latent=latent.detach().cpu(),
+            trajectory=trajectory,
+            timesteps=timesteps.detach().cpu(),
+            drifts=drifts,
+            diffusions=diffusions,
+            noises=noises,
+            running_costs=running_costs.detach().cpu(),
+            rewards=rewards.detach().cpu(),
+            valids=valids.detach().cpu(),
+            cost_functionals=cost_functionals.detach().cpu(),
+            kwargs=dict_to_device(kwargs, "cpu"),
+        )
+
+    def batch_sample(self, n: int, batch_size: int, pbar: bool = False, **kwargs) -> Sample[D]:
         """Sample n trajectories from the environment in batches.
 
         Parameters

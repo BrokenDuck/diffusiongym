@@ -1,7 +1,7 @@
 """Reward module package for diffusiongym."""
 
-from .base import DummyReward, Reward
-from .one_dim import BinaryReward, GaussianReward
+from diffusiongym.rewards.base import DummyReward, Reward
+from diffusiongym.rewards.one_dim import BinaryReward, GaussianReward
 
 __all__ = [
     "BinaryReward",

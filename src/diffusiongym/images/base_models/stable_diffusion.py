@@ -3,7 +3,7 @@
 import json
 import random
 from importlib.resources import open_text
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import StableDiffusionPipeline
@@ -44,10 +44,10 @@ class StableDiffusionBaseModel(BaseModel[DDTensor]):
         self,
         model_name: str,
         cfg_scale: float = 0.0,
-        min_cfg_scale: Optional[float] = None,
-        max_cfg_scale: Optional[float] = None,
-        prompts: Optional[list[str]] = None,
-        device: Optional[torch.device] = None,
+        min_cfg_scale: float | None = None,
+        max_cfg_scale: float | None = None,
+        prompts: list[str] | None = None,
+        device: torch.device | None = None,
     ):
         super().__init__(device)
 
@@ -91,7 +91,7 @@ class StableDiffusionBaseModel(BaseModel[DDTensor]):
     def do_cfg(self) -> bool:
         return (self.cfg_scale > 0.0) or (self.min_cfg_scale is not None and self.max_cfg_scale is not None)
 
-    def sample_p0(self, n: int, **kwargs: Any) -> tuple[DDTensor, dict[str, Any]]:
+    def sample_p0(self, n: int, **kwargs) -> tuple[DDTensor, dict[str, Any]]:
         """Sample n latent datapoints from the base distribution :math:`p_0`.
 
         Parameters
@@ -143,7 +143,7 @@ class StableDiffusionBaseModel(BaseModel[DDTensor]):
             {"prompt": prompt, "cfg_scale": cfg_scale},
         )
 
-    def preprocess(self, x: DDTensor, **kwargs: Any) -> tuple[DDTensor, dict[str, Any]]:
+    def preprocess(self, x: DDTensor, **kwargs) -> tuple[DDTensor, dict[str, Any]]:
         """Encode the prompt (if provided instead of encoder_hidden_states).
 
         Parameters
@@ -221,7 +221,7 @@ class StableDiffusionBaseModel(BaseModel[DDTensor]):
 
         return DDTensor(decoded)
 
-    def forward(self, x: DDTensor, t: torch.Tensor, **kwargs: Any) -> DDTensor:
+    def forward(self, x: DDTensor, t: torch.Tensor, **kwargs) -> DDTensor:
         r"""Forward pass of the model, outputting :math:`\epsilon(x_t, t)`.
 
         Parameters
@@ -263,10 +263,10 @@ class StableDiffusionBaseModel(BaseModel[DDTensor]):
     def train_loss(
         self,
         x1: DDTensor,
-        xt: Optional[DDTensor] = None,
-        t: Optional[torch.Tensor] = None,
-        pred: Optional[DDTensor] = None,
-        **kwargs: Any,
+        xt: DDTensor | None = None,
+        t: torch.Tensor | None = None,
+        pred: DDTensor | None = None,
+        **kwargs,
     ) -> torch.Tensor:
         """Add prompt dropout for training when CFG is enabled."""
         if self.do_cfg and self.p_dropout > 0:
@@ -311,10 +311,10 @@ class SD2BaseModel(StableDiffusionBaseModel):
     def __init__(
         self,
         cfg_scale: float = 0.0,
-        min_cfg_scale: Optional[float] = None,
-        max_cfg_scale: Optional[float] = None,
-        prompts: Optional[list[str]] = None,
-        device: Optional[torch.device] = None,
+        min_cfg_scale: float | None = None,
+        max_cfg_scale: float | None = None,
+        prompts: list[str] | None = None,
+        device: torch.device | None = None,
     ):
         super().__init__(
             "PeggyWang/stable-diffusion-2-base",
@@ -350,10 +350,10 @@ class SD15BaseModel(StableDiffusionBaseModel):
     def __init__(
         self,
         cfg_scale: float = 0.0,
-        min_cfg_scale: Optional[float] = None,
-        max_cfg_scale: Optional[float] = None,
-        prompts: Optional[list[str]] = None,
-        device: Optional[torch.device] = None,
+        min_cfg_scale: float | None = None,
+        max_cfg_scale: float | None = None,
+        prompts: list[str] | None = None,
+        device: torch.device | None = None,
     ):
         super().__init__(
             "sd-legacy/stable-diffusion-v1-5",

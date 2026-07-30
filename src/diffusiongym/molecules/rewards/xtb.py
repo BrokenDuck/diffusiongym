@@ -32,7 +32,7 @@ class XTBReward(Reward[DDGraph]):
         self.attr_name = attr_name
         self.relax = safe_mmff_relax if do_relax else identity_fn
 
-    def __call__(self, sample: DDGraph, latent: DDGraph, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
+    def __call__(self, sample: DDGraph, latent: DDGraph, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         mols = graph_to_mols(sample)
 
         valid_mols = []

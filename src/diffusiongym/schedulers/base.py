@@ -1,14 +1,13 @@
 """Base classes for schedulers of flow matching models."""
 
 from abc import ABC, abstractmethod
-from typing import Generic
 
 import torch
 
-from diffusiongym.types import D
+from diffusiongym.types import DDMixin
 
 
-class NoiseSchedule(ABC, Generic[D]):
+class NoiseSchedule[D: DDMixin](ABC):
     r"""Abstract base class for noise schedules :math:`\sigma(t)`."""
 
     @abstractmethod
@@ -32,24 +31,18 @@ class NoiseSchedule(ABC, Generic[D]):
         ...
 
 
-class Scheduler(ABC, Generic[D]):
+class Scheduler[D: DDMixin](ABC):
     r"""Abstract base class for schedulers of flow matching models.
 
     Generally :math:`\beta_t = 1-\alpha_t`, but this can be re-defined.
+
+    Noise schedule default to memoryless noise schedule.
     """
 
-    @property
-    def noise_schedule(self) -> NoiseSchedule[D]:
-        """Get the current noise schedule."""
-        if not hasattr(self, "_noise_schedule"):
-            self._noise_schedule: NoiseSchedule[D] = MemorylessNoiseSchedule(self)
-
-        return self._noise_schedule
-
-    @noise_schedule.setter
-    def noise_schedule(self, schedule: NoiseSchedule[D]) -> None:
-        """Set the noise schedule. Defaults to the memoryless noise schedule."""
-        self._noise_schedule = schedule
+    def __init__(self, noise_schedule: NoiseSchedule[D] | None = None):
+        if noise_schedule is None:
+            noise_schedule = MemorylessNoiseSchedule(self)
+        self.noise_schedule = noise_schedule
 
     @abstractmethod
     def alpha(self, x: D, t: torch.Tensor) -> D:
@@ -164,7 +157,7 @@ class Scheduler(ABC, Generic[D]):
         return beta * ((alpha_dot / alpha) * beta - beta_dot)
 
 
-class MemorylessNoiseSchedule(NoiseSchedule[D]):
+class MemorylessNoiseSchedule[D: DDMixin](NoiseSchedule):
     r"""Memoryless noise schedule (https://arxiv.org/abs/2409.08861) based on the scheduler's eta function.
 
     This schedule ensures that :math:`x_0` and :math:`x_1` are independent, which is necessary for

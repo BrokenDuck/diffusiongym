@@ -1,13 +1,32 @@
 """Types for molecular graphs in diffusiongym."""
 
-from typing import Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Self, Sequence
 
 import torch
-from torch_geometric.data import Batch, Data
+from torch_geometric.data import Data
 from torch_geometric.nn import global_mean_pool
-from typing_extensions import Self
 
 from diffusiongym.types import BinaryOp, DDMixin, UnaryOp
+
+if TYPE_CHECKING:
+    import numpy as np
+    from torch_geometric.data.data import BaseData
+    from torch_geometric.data.dataset import IndexType
+
+    class Batch(Data):
+        batch_size: int
+        num_graphs: int
+
+        def __getitem__(self, idx: int | np.integer | str | IndexType) -> Any: ...  # ty: ignore[invalid-method-override]
+        def __len__(self) -> int: ...
+        def __reduce__(self) -> Any: ...
+        @classmethod
+        def from_data_list(cls, data_list: list[BaseData], follow_batch: list[str] | None = None, exclude_keys: list[str] | None = None) -> Self: ...
+        def get_example(self, idx: int) -> BaseData: ...
+        def index_select(self, idx: IndexType) -> list[BaseData]: ...
+
+else:
+    from torch_geometric.data import Batch
 
 _RESERVED_KEYS: frozenset[str] = frozenset({"edge_index", "batch", "ptr", "num_nodes"})
 
@@ -26,6 +45,7 @@ def _iter_node_features(g: Batch) -> list[tuple[str, torch.Tensor]]:
 
 def _iter_edge_features(g: Batch) -> list[tuple[str, torch.Tensor]]:
     """Return (key, tensor) pairs for edge-feature attributes on g."""
+    assert g.edge_index, "Batch should contain graphs"
     num_edges = g.edge_index.size(1)
     result = []
     for key in g.keys():
@@ -39,6 +59,7 @@ def _iter_edge_features(g: Batch) -> list[tuple[str, torch.Tensor]]:
 
 def construct_ue_mask(g: Batch) -> torch.Tensor:
     """Construct a mask indicating upper edges in the graph."""
+    assert g.edge_index, "Batch should contain graphs"
     device = g.edge_index.device
     nodes_per_graph = g.ptr[1:] - g.ptr[:-1]
     edges_per_mol = nodes_per_graph * (nodes_per_graph - 1)
@@ -49,11 +70,14 @@ def construct_ue_mask(g: Batch) -> torch.Tensor:
 
 def construct_n_idx(g: Batch) -> torch.Tensor:
     """Construct a tensor which maps each node to its graph index in the batch."""
+    assert g.batch, "Batch should contain graphs"
     return g.batch
 
 
 def construct_e_idx(g: Batch) -> torch.Tensor:
     """Construct a tensor which maps each edge to its graph index in the batch."""
+    assert g.batch, "Batch should contain graphs"
+    assert g.edge_index, "Batch should contain graphs"
     return g.batch[g.edge_index[0]]
 
 
@@ -75,9 +99,9 @@ class DDGraph(DDMixin):
     def __init__(
         self,
         graph: Batch,
-        ue_mask: Optional[torch.Tensor] = None,
-        n_idx: Optional[torch.Tensor] = None,
-        e_idx: Optional[torch.Tensor] = None,
+        ue_mask: torch.Tensor | None = None,
+        n_idx: torch.Tensor | None = None,
+        e_idx: torch.Tensor | None = None,
     ):
         if ue_mask is None:
             ue_mask = construct_ue_mask(graph)
@@ -96,6 +120,7 @@ class DDGraph(DDMixin):
 
     @property
     def device(self) -> torch.device:
+        assert self.graph.edge_index, "Batch should contain graph"
         return self.graph.edge_index.device
 
     def to(self, device: torch.device | str) -> Self:
@@ -109,7 +134,7 @@ class DDGraph(DDMixin):
     def __len__(self) -> int:
         return int(self.graph.num_graphs)
 
-    def __getitem__(self, idx: Union[int, slice]) -> Self:
+    def __getitem__(self, idx: int | slice) -> Self:
         if isinstance(idx, int):
             n = len(self)
 
@@ -137,7 +162,7 @@ class DDGraph(DDMixin):
         if not items:
             raise ValueError("Cannot collate an empty sequence")
 
-        data_list: list[Data] = []
+        data_list: list[BaseData] = []
         for item in items:
             data_list.extend(item.graph.to_data_list())
         return cls(Batch.from_data_list(data_list))
@@ -149,7 +174,7 @@ class DDGraph(DDMixin):
         empty.num_nodes = self.graph.num_nodes
         empty.batch = self.graph.batch
         empty.ptr = self.graph.ptr
-        empty._num_graphs = self.graph.num_graphs[attr - defined]
+        empty._num_graphs = self.graph.num_graphs
         return empty
 
     def apply(self, op: UnaryOp) -> Self:
@@ -163,34 +188,35 @@ class DDGraph(DDMixin):
 
         return self.__class__(res, self.ue_mask, self.n_idx, self.e_idx)
 
-    def combine(self, other: Union[Self, float, torch.Tensor], op: BinaryOp) -> Self:
+    def combine(self, other: Self | float | torch.Tensor, op: BinaryOp) -> Self:  # ty: ignore[invalid-method-override]
         res = self._get_empty_graph()
 
         if isinstance(other, DDGraph):
             for key, val in _iter_node_features(self.graph):
                 other_val = other.graph[key] if hasattr(other.graph, key) else None
                 if other_val is not None and isinstance(other_val, torch.Tensor):
-                    res[key] = op(val, other_val)[arg - type]
+                    res[key] = op(val, other_val)
                 else:
                     res[key] = val
 
             for key, val in _iter_edge_features(self.graph):
                 other_val = other.graph[key] if hasattr(other.graph, key) else None
                 if other_val is not None and isinstance(other_val, torch.Tensor):
-                    res[key] = op(val, other_val)[arg - type]
+                    res[key] = op(val, other_val)
                 else:
                     res[key] = val
         else:
             for key, val in _iter_node_features(self.graph):
-                res[key] = op(val, other)[arg - type]
+                res[key] = op(val, other)  # ty: ignore[invalid-argument-type]
 
             for key, val in _iter_edge_features(self.graph):
-                res[key] = op(val, other)[arg - type]
+                res[key] = op(val, other)  # ty: ignore[invalid-argument-type]
 
         return self.__class__(res, self.ue_mask, self.n_idx, self.e_idx)
 
     def aggregate(self, reduction: str = "mean") -> torch.Tensor:
         batch_size = len(self)
+        assert self.graph.edge_index, "Batch should contain graph"
         device = self.graph.edge_index.device
         summed = torch.zeros(batch_size, device=device)
 

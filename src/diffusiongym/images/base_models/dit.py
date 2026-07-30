@@ -1,6 +1,6 @@
 """Pre-trained base model for Diffusion Transformer."""
 
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import torch
 from diffusers.pipelines.dit.pipeline_dit import DiTPipeline
@@ -18,7 +18,7 @@ class DiTBaseModel(BaseModel[DDTensor]):
 
     output_type = "epsilon"
 
-    def __init__(self, cfg_scale: float = 0.0, device: Optional[torch.device] = None):
+    def __init__(self, cfg_scale: float = 0.0, device: torch.device | None = None):
         super().__init__(device)
 
         pipe = DiTPipeline.from_pretrained("facebook/DiT-XL-2-256").to(device)
@@ -42,7 +42,7 @@ class DiTBaseModel(BaseModel[DDTensor]):
     def do_cfg(self) -> bool:
         return self.cfg_scale > 0.0
 
-    def sample_p0(self, n: int, **kwargs: Any) -> tuple[DDTensor, dict[str, Any]]:
+    def sample_p0(self, n: int, **kwargs) -> tuple[DDTensor, dict[str, Any]]:
         """Sample n latent datapoints from the base distribution :math:`p_0`.
 
         Parameters
@@ -84,7 +84,7 @@ class DiTBaseModel(BaseModel[DDTensor]):
             {"class_labels": class_labels},
         )
 
-    def preprocess(self, x: DDTensor, **kwargs: Any) -> tuple[DDTensor, dict[str, Any]]:
+    def preprocess(self, x: DDTensor, **kwargs) -> tuple[DDTensor, dict[str, Any]]:
         """Encode the prompt (if provided instead of encoder_hidden_states).
 
         Parameters
@@ -130,7 +130,7 @@ class DiTBaseModel(BaseModel[DDTensor]):
 
         return DDTensor(decoded)
 
-    def forward(self, x: DDTensor, t: torch.Tensor, **kwargs: Any) -> DDTensor:
+    def forward(self, x: DDTensor, t: torch.Tensor, **kwargs) -> DDTensor:
         r"""Forward pass of the model, outputting :math:`\epsilon(x_t, t)`.
 
         Parameters

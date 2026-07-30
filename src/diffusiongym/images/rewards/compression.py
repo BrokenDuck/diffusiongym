@@ -1,7 +1,6 @@
 """Compression-based reward implementations."""
 
 import io
-from typing import Any
 
 import torch
 from torchvision.transforms.functional import to_pil_image
@@ -52,7 +51,7 @@ class IncompressionReward(Reward[DDTensor]):
     def __init__(self, quality_level: int = 85):
         self.quality_level = quality_level
 
-    def __call__(self, sample: DDTensor, latent: DDTensor, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
+    def __call__(self, sample: DDTensor, latent: DDTensor, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute the incompression reward for a batch of images."""
         return (
             _bits_per_pixel(sample.data, self.quality_level),
@@ -76,7 +75,7 @@ class CompressionReward(Reward[DDTensor]):
     def __init__(self, quality_level: int = 85):
         self.quality_level = quality_level
 
-    def __call__(self, sample: DDTensor, latent: DDTensor, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
+    def __call__(self, sample: DDTensor, latent: DDTensor, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute the compression reward for a batch of images."""
         return (
             -_bits_per_pixel(sample.data, self.quality_level),

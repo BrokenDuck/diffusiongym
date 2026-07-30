@@ -1,27 +1,22 @@
 """Pre-trained continuous FlowMol model, trained on GEOM-Drugs."""
 
 import warnings
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
+import flowmol
 import torch
 import torch.nn.functional as F
+from flowmol.data_processing.utils import build_edge_idxs, get_batch_idxs, get_upper_edge_mask
 from torch_geometric.data import Batch, Data
 from torch_geometric.nn import global_mean_pool
-
-try:
-    import flowmol
-    from flowmol.data_processing.utils import build_edge_idxs, get_batch_idxs, get_upper_edge_mask
-except ImportError as exc:  # pragma: no cover - only hit when dependency is missing
-    raise ImportError(
-        "FlowMol is required for molecule environments. "
-        "Install it manually, e.g. "
-        "`pip install git+https://github.com/cristianpjensen/FlowMol.git@a666676c2f3835fc410dede22eb41c5c7c4f2eb8`."
-    ) from exc
 
 from diffusiongym import BaseModel, ConstantNoiseSchedule, CosineScheduler, Scheduler
 from diffusiongym.molecules.types import DDGraph, _iter_edge_features, _iter_node_features
 from diffusiongym.registry import base_model_registry
 from diffusiongym.types import DDTensor
+
+if TYPE_CHECKING:
+    from torch_geometric.data.data import BaseData
 
 
 class FlowMolBaseModel(BaseModel[DDGraph]):
@@ -49,7 +44,7 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
         """Scheduler used for sampling."""
         return self._scheduler
 
-    def sample_p0(self, n: int, **kwargs: Any) -> tuple[DDGraph, dict[str, Any]]:
+    def sample_p0(self, n: int, **kwargs) -> tuple[DDGraph, dict[str, Any]]:
         """Sample n datapoints from the base distribution :math:`p_0`.
 
         Parameters
@@ -80,7 +75,7 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
         for n_atoms_i in torch.unique(n_atoms):
             edge_idxs_dict[int(n_atoms_i)] = build_edge_idxs(n_atoms_i)
 
-        data_list: list[Data] = []
+        data_list: list[BaseData] = []
         for n_atoms_i in n_atoms:
             edge_idxs = edge_idxs_dict[int(n_atoms_i)]
             data_list.append(Data(edge_index=edge_idxs.to(self.device), num_nodes=int(n_atoms_i)))
@@ -98,7 +93,7 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
 
         return DDGraph(g, ue_mask, n_idx, e_idx), kwargs
 
-    def preprocess(self, x: DDGraph, **kwargs: Any) -> tuple[DDGraph, dict[str, Any]]:
+    def preprocess(self, x: DDGraph, **kwargs) -> tuple[DDGraph, dict[str, Any]]:
         if "n_atoms" not in kwargs:
             kwargs["n_atoms"] = x.graph.ptr.diff()
 
@@ -116,7 +111,7 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
         g.upper_edge_mask = x.ue_mask
         return DDGraph(g, x.ue_mask, x.n_idx, x.e_idx)
 
-    def forward(self, x: DDGraph, t: torch.Tensor, **kwargs: Any) -> DDGraph:
+    def forward(self, x: DDGraph, t: torch.Tensor, **kwargs) -> DDGraph:
         r"""Compute the endpoint vector field :math:`\hat{x_1}(x, t)`."""
         output = self.model.vector_field(
             x.graph,
@@ -143,10 +138,10 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
     def train_loss(
         self,
         x1: DDGraph,
-        xt: Optional[DDGraph] = None,
-        t: Optional[torch.Tensor] = None,
-        pred: Optional[DDGraph] = None,
-        **kwargs: Any,
+        xt: DDGraph | None = None,
+        t: torch.Tensor | None = None,
+        pred: DDGraph | None = None,
+        **kwargs,
     ) -> torch.Tensor:
         """Compute loss for a single batch training step.
 
@@ -189,11 +184,11 @@ class FlowMolBaseModel(BaseModel[DDGraph]):
         g = pred.graph
 
         # Compute per-node/edge losses without mutating pred.graph
-        loss_x = F.mse_loss(g.x_t, x1.graph.x_t, reduction="none").mean(dim=-1)[operator]
-        loss_a = F.cross_entropy(g.a_t, x1.graph.a_t.argmax(dim=-1), reduction="none")[operator]
-        loss_c = F.cross_entropy(g.c_t, x1.graph.c_t.argmax(dim=-1), reduction="none")[operator]
+        loss_x = F.mse_loss(g.x_t, x1.graph.x_t, reduction="none").mean(dim=-1)
+        loss_a = F.cross_entropy(g.a_t, x1.graph.a_t.argmax(dim=-1), reduction="none")
+        loss_c = F.cross_entropy(g.c_t, x1.graph.c_t.argmax(dim=-1), reduction="none")
         # todo: only over upper edge
-        loss_e = F.cross_entropy(g.e_t, x1.graph.e_t.argmax(dim=-1), reduction="none")[operator]
+        loss_e = F.cross_entropy(g.e_t, x1.graph.e_t.argmax(dim=-1), reduction="none")
 
         losses = {
             "x": global_mean_pool(loss_x.unsqueeze(-1), pred.n_idx).squeeze(-1),

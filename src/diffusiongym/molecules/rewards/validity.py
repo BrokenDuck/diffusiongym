@@ -19,7 +19,7 @@ class ValidityReward(Reward[DDGraph]):
     def __init__(self) -> None:
         RDLogger.DisableLog("rdApp.*")
 
-    def __call__(self, sample: DDGraph, latent: DDGraph, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
+    def __call__(self, sample: DDGraph, latent: DDGraph, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         mols = graph_to_mols(sample)
 
         valids = torch.zeros(len(sample), device=sample.device, dtype=torch.bool)

@@ -1,23 +1,23 @@
 """Abstract base class for base models used in flow matching and diffusion models."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, Literal, Optional
+from typing import Any, Literal
 
 import torch
 from torch import nn
 
 from diffusiongym.schedulers import Scheduler
-from diffusiongym.types import D
+from diffusiongym.types import DDMixin
 
 OutputType = Literal["epsilon", "endpoint", "velocity", "score"]
 
 
-class BaseModel(ABC, nn.Module, Generic[D]):
+class BaseModel[D: DDMixin](ABC, nn.Module):
     """Abstract base class for base models used in flow matching and diffusion."""
 
     output_type: OutputType
 
-    def __init__(self, device: Optional[torch.device]):
+    def __init__(self, device: torch.device | None):
         super().__init__()
 
         if device is None:
@@ -31,7 +31,7 @@ class BaseModel(ABC, nn.Module, Generic[D]):
         """Base model-dependent scheduler used for sampling."""
 
     @abstractmethod
-    def sample_p0(self, n: int, **kwargs: Any) -> tuple[D, dict[str, Any]]:
+    def sample_p0(self, n: int, **kwargs) -> tuple[D, dict[str, Any]]:
         """Sample n data points from the base distribution p0.
 
         Parameters
@@ -50,7 +50,7 @@ class BaseModel(ABC, nn.Module, Generic[D]):
         """
 
     @abstractmethod
-    def forward(self, x: D, t: torch.Tensor, **kwargs: Any) -> D:
+    def forward(self, x: D, t: torch.Tensor, **kwargs) -> D:
         """Forward pass of the base model.
 
         Parameters
@@ -66,7 +66,7 @@ class BaseModel(ABC, nn.Module, Generic[D]):
             Output of the model.
         """
 
-    def preprocess(self, x: D, **kwargs: Any) -> tuple[D, dict[str, Any]]:
+    def preprocess(self, x: D, **kwargs) -> tuple[D, dict[str, Any]]:
         """Preprocess data and keyword arguments for the base model.
 
         Parameters
@@ -103,10 +103,10 @@ class BaseModel(ABC, nn.Module, Generic[D]):
     def train_loss(
         self,
         x1: D,
-        xt: Optional[D] = None,
-        t: Optional[torch.Tensor] = None,
-        pred: Optional[D] = None,
-        **kwargs: Any,
+        xt: D | None = None,
+        t: torch.Tensor | None = None,
+        pred: D | None = None,
+        **kwargs,
     ) -> torch.Tensor:
         """Compute loss for a single batch training step.
 
