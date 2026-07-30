@@ -3,10 +3,10 @@ r"""Environment where the base model predicts the endpoint :math:`\hat{x}_1(x, t
 import torch
 
 from diffusiongym.environments.base import Environment
-from diffusiongym.types import DDMixin
+from diffusiongym.types import DDBatch
 
 
-class EndpointEnvironment[D: DDMixin](Environment[D]):
+class EndpointEnvironment[D: DDBatch](Environment[D]):
     r"""Environment where the base model predicts the endpoint :math:`\hat{x}_1(x, t)`."""
 
     def drift_from_prediction(
@@ -24,7 +24,9 @@ class EndpointEnvironment[D: DDMixin](Environment[D]):
         score_coefficient = eta + 0.5 * sigma.square()
         beta_sq = beta.square()
 
-        return (kappa - score_coefficient / beta_sq) * x + (score_coefficient * alpha / beta_sq) * prediction
+        return (kappa - score_coefficient / beta_sq) * x + (
+            score_coefficient * alpha / beta_sq
+        ) * prediction
 
     def control_from_prediction_delta(
         self,

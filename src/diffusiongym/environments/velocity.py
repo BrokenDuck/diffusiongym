@@ -3,10 +3,10 @@ r"""Environment where the base model predicts the velocity :math:`v(x, t)`."""
 import torch
 
 from diffusiongym.environments.base import Environment
-from diffusiongym.types import DDMixin
+from diffusiongym.types import DDBatch
 
 
-class VelocityEnvironment[D: DDMixin](Environment[D]):
+class VelocityEnvironment[D: DDBatch](Environment[D]):
     r"""Environment where the base model predicts the velocity :math:`v(x, t)`."""
 
     def drift_from_prediction(

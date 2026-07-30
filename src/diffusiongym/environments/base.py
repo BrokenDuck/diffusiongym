@@ -13,7 +13,7 @@ from tqdm.auto import tqdm, trange
 from diffusiongym.base_models import BaseModel
 from diffusiongym.rewards import Reward
 from diffusiongym.schedulers import MemorylessNoiseSchedule, Scheduler
-from diffusiongym.types import DDMixin
+from diffusiongym.types import DDBatch
 from diffusiongym.utils import dict_to_device, index_dict
 
 
@@ -27,7 +27,7 @@ class EnvironmentMode(StrEnum):
 
 
 @dataclass
-class Sample[D: DDMixin]:
+class Sample[D: DDBatch]:
     """A convenience wrapper for a batch of samples.
 
     Parameters
@@ -72,27 +72,55 @@ class Sample[D: DDMixin]:
     kwargs: dict[str, Any]
 
     @property
-    def num_steps(self):
+    def num_steps(self) -> int:
         return self.timesteps.shape[0] - 1
 
     def __post_init__(self):
         n = len(self.sample)
-        assert len(self.latent) == n, f"latent batch size != sample batch size, got {len(self.latent)} != {n}"
-        assert len(self.trajectory[0]) == n, f"trajectory batch size != sample batch size, got {len(self.trajectory[0])} != {n}"
-        assert len(self.drifts[0]) == n, f"drift batch size != sample batch size, got {len(self.drifts[0])} != {n}"
-        assert len(self.diffusions[0]) == n, f"diffusion batch size != sample batch size, got {len(self.diffusions[0])} != {n}"
-        assert len(self.noises[0]) == n, f"noise batch size != sample batch size, got {len(self.noises[0])} != {n}"
-        assert self.running_costs.shape[1] == n, f"running_costs batch size != sample batch size, got {self.running_costs.shape[0]} != {n}"
-        assert self.rewards.shape[0] == n, f"rewards batch size != sample batch size, got {self.rewards.shape[0]} != {n}"
-        assert self.valids.shape[0] == n, f"valids batch size != sample batch size, got {self.valids.shape[0]} != {n}"
-        assert self.cost_functionals.shape[1] == n, f"cost functionals batch size != sample batch size, got {self.cost_functionals.shape[0]} != {n}"
+        assert len(self.latent) == n, (
+            f"latent batch size != sample batch size, got {len(self.latent)} != {n}"
+        )
+        assert len(self.trajectory[0]) == n, (
+            f"trajectory batch size != sample batch size, got {len(self.trajectory[0])} != {n}"
+        )
+        assert len(self.drifts[0]) == n, (
+            f"drift batch size != sample batch size, got {len(self.drifts[0])} != {n}"
+        )
+        assert len(self.diffusions[0]) == n, (
+            f"diffusion batch size != sample batch size, got {len(self.diffusions[0])} != {n}"
+        )
+        assert len(self.noises[0]) == n, (
+            f"noise batch size != sample batch size, got {len(self.noises[0])} != {n}"
+        )
+        assert self.running_costs.shape[1] == n, (
+            f"running_costs batch size != sample batch size, got {self.running_costs.shape[0]} != {n}"
+        )
+        assert self.rewards.shape[0] == n, (
+            f"rewards batch size != sample batch size, got {self.rewards.shape[0]} != {n}"
+        )
+        assert self.valids.shape[0] == n, (
+            f"valids batch size != sample batch size, got {self.valids.shape[0]} != {n}"
+        )
+        assert self.cost_functionals.shape[1] == n, (
+            f"cost functionals batch size != sample batch size, got {self.cost_functionals.shape[0]} != {n}"
+        )
 
         m = self.num_steps
-        assert len(self.trajectory) == m + 1, f"trajectory length != number of steps + 1, got {len(self.trajectory)} != {m + 1}"
-        assert len(self.drifts) == m, f"drifts length != number of steps, got {len(self.drifts)} != {m}"
-        assert len(self.diffusions) == m, f"diffusions length != number of steps, got {len(self.diffusions)} != {m}"
-        assert len(self.noises) == m, f"noises length != number of steps, got {len(self.noises)} != {m}"
-        assert self.running_costs.shape[0] == m, f"running_costs length != number of steps, got {self.running_costs.shape[0]} != {m}"
+        assert len(self.trajectory) == m + 1, (
+            f"trajectory length != number of steps + 1, got {len(self.trajectory)} != {m + 1}"
+        )
+        assert len(self.drifts) == m, (
+            f"drifts length != number of steps, got {len(self.drifts)} != {m}"
+        )
+        assert len(self.diffusions) == m, (
+            f"diffusions length != number of steps, got {len(self.diffusions)} != {m}"
+        )
+        assert len(self.noises) == m, (
+            f"noises length != number of steps, got {len(self.noises)} != {m}"
+        )
+        assert self.running_costs.shape[0] == m, (
+            f"running_costs length != number of steps, got {self.running_costs.shape[0]} != {m}"
+        )
         assert self.cost_functionals.shape[0] == m + 1, (
             f"cost_functionals length != number of steps + 1, got {self.cost_functionals.shape[0]} != {m + 1}"
         )
@@ -129,11 +157,23 @@ class Sample[D: DDMixin]:
         return Sample(
             sample=data_type.collate([x.sample for x in samples]),
             latent=data_type.collate([x.latent for x in samples]),
-            trajectory=[data_type.collate([x.trajectory[t] for x in samples]) for t in range(num_steps + 1)],
+            trajectory=[
+                data_type.collate([x.trajectory[t] for x in samples])
+                for t in range(num_steps + 1)
+            ],
             timesteps=samples[0].timesteps,
-            drifts=[data_type.collate([x.drifts[t] for x in samples]) for t in range(num_steps)],
-            diffusions=[data_type.collate([x.diffusions[t] for x in samples]) for t in range(num_steps)],
-            noises=[data_type.collate([x.noises[t] for x in samples]) for t in range(num_steps)],
+            drifts=[
+                data_type.collate([x.drifts[t] for x in samples])
+                for t in range(num_steps)
+            ],
+            diffusions=[
+                data_type.collate([x.diffusions[t] for x in samples])
+                for t in range(num_steps)
+            ],
+            noises=[
+                data_type.collate([x.noises[t] for x in samples])
+                for t in range(num_steps)
+            ],
             running_costs=torch.cat([x.running_costs for x in samples], dim=1),
             rewards=torch.cat([x.rewards for x in samples], dim=0),
             valids=torch.cat([x.valids for x in samples], dim=0),
@@ -142,13 +182,13 @@ class Sample[D: DDMixin]:
         )
 
 
-class Policy[D: DDMixin](Protocol):
+class Policy[D: DDBatch](Protocol):
     """General protocol for a policy function."""
 
     def __call__(self, x: D, t: torch.Tensor, **kwargs) -> D: ...
 
 
-class Environment[D: DDMixin](ABC):
+class Environment[D: DDBatch](ABC):
     """Abstract base class for all environments.
 
     The current policy may be represented by:
@@ -360,7 +400,9 @@ class Environment[D: DDMixin](ABC):
             rtol=1e-5,
             atol=1e-7,
         ):
-            raise RuntimeError("Adjoint Matching requires the memoryless schedule sigma**2 == 2 * eta.")
+            raise RuntimeError(
+                "Adjoint Matching requires the memoryless schedule sigma**2 == 2 * eta."
+            )
 
     @staticmethod
     def _require_stochastic_schedule(sigma: D) -> None:
@@ -432,7 +474,9 @@ class Environment[D: DDMixin](ABC):
         ### Run Euler-Maruyama Forward Pass ###
 
         # Discrete time steps at which we advance
-        timesteps = torch.linspace(0.0, 1.0, self.discretization_steps + 1, device=device)
+        timesteps = torch.linspace(
+            0.0, 1.0, self.discretization_steps + 1, device=device
+        )
 
         trajectory = [latent.detach().cpu()]  # Sample at each time step
         drifts = []  # Drift term at each time step
@@ -442,7 +486,9 @@ class Environment[D: DDMixin](ABC):
         running_costs = torch.zeros(self.discretization_steps, n, device=device)
 
         iterator = enumerate(pairwise(timesteps))
-        for i, (t0, t1) in tqdm(iterator, total=self.discretization_steps) if pbar else iterator:
+        for i, (t0, t1) in (
+            tqdm(iterator, total=self.discretization_steps) if pbar else iterator
+        ):
             dt = t1 - t0
 
             # To prevent anomalies, we do not evaluate at 0 but at 0.02
@@ -495,7 +541,9 @@ class Environment[D: DDMixin](ABC):
             kwargs=dict_to_device(kwargs, "cpu"),
         )
 
-    def batch_sample(self, n: int, batch_size: int, pbar: bool = False, **kwargs) -> Sample[D]:
+    def batch_sample(
+        self, n: int, batch_size: int, pbar: bool = False, **kwargs
+    ) -> Sample[D]:
         """Sample n trajectories from the environment in batches.
 
         Parameters

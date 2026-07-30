@@ -2,41 +2,19 @@
 
 import os
 import tempfile
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 import torch
 from torch import nn
 
 from diffusiongym.schedulers import NoiseSchedule
-from diffusiongym.types import DDMixin
+from diffusiongym.types import DDBatch
 
 
 def identity_fn[T](x: T) -> T:
     """Identity function."""
     return x
-
-
-def append_dims(x: torch.Tensor, ndim: int) -> torch.Tensor:
-    """Match the number of dimensions of x to ndim by adding dimensions at the end.
-
-    Parameters
-    ----------
-    x : torch.Tensor, shape (*shape)
-        The input tensor.
-    ndim : int
-        The target number of dimensions.
-
-    Returns
-    -------
-    x : torch.Tensor, shape (*shape, 1, ..., 1)
-        The reshaped tensor with ndim dimensions.
-    """
-    if x.ndim > ndim:
-        return x
-
-    shape = x.shape + (1,) * (ndim - x.ndim)
-    return x.view(shape)
 
 
 def index_dict[T](d: T, start: int, end: int | None = None) -> T:
@@ -73,6 +51,28 @@ def index_dict[T](d: T, start: int, end: int | None = None) -> T:
     raise TypeError(f"Unsupported leaf type: {type(d)}")
 
 
+def append_dims(x: torch.Tensor, ndim: int) -> torch.Tensor:
+    """Match the number of dimensions of x to ndim by adding dimensions at the end.
+
+    Parameters
+    ----------
+    x : torch.Tensor, shape (*shape)
+        The input tensor.
+    ndim : int
+        The target number of dimensions.
+
+    Returns
+    -------
+    x : torch.Tensor, shape (*shape, 1, ..., 1)
+        The reshaped tensor with ndim dimensions.
+    """
+    if x.ndim > ndim:
+        return x
+
+    shape = x.shape + (1,) * (ndim - x.ndim)
+    return x.view(shape)
+
+
 def dict_to_device[T](d: T, device: torch.device | str) -> T:
     """Recursively move the leaves of a nested dictionary to a specified device.
 
@@ -104,7 +104,7 @@ def dict_to_device[T](d: T, device: torch.device | str) -> T:
 
 
 @contextmanager
-def temporary_workdir() -> Generator[str, None, None]:
+def temporary_workdir() -> Generator[str]:
     """Context manager that runs code in a fresh temporary directory.
 
     When exiting the context, it returns to the original working directory and deletes the temporary
@@ -119,7 +119,7 @@ def temporary_workdir() -> Generator[str, None, None]:
             os.chdir(old_cwd)
 
 
-class ValuePolicy[D: DDMixin](nn.Module):
+class ValuePolicy[D: DDBatch](nn.Module):
     r"""Policy based on a value function, :math:`u(x, t) = -\sigma(t) \nabla_x V(x, t)`.
 
     Parameters
@@ -131,7 +131,9 @@ class ValuePolicy[D: DDMixin](nn.Module):
         The noise schedule, :math:`\sigma(t)`.
     """
 
-    def __init__(self, value_network: nn.Module, noise_schedule: NoiseSchedule[D]) -> None:
+    def __init__(
+        self, value_network: nn.Module, noise_schedule: NoiseSchedule[D]
+    ) -> None:
         super().__init__()
         self.value_network = value_network
         self.noise_schedule = noise_schedule

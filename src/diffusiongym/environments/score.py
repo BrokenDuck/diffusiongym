@@ -3,10 +3,10 @@ r"""Environment where the base model predicts the score :math:`\nabla \log p_t(x
 import torch
 
 from diffusiongym.environments.base import Environment
-from diffusiongym.types import DDMixin
+from diffusiongym.types import DDBatch
 
 
-class ScoreEnvironment[D: DDMixin](Environment[D]):
+class ScoreEnvironment[D: DDBatch](Environment[D]):
     r"""Environment where the base model predicts the score :math:`\nabla \log p_t(x)`."""
 
     def drift_from_prediction(

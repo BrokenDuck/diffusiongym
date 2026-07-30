@@ -7,15 +7,13 @@ import torch
 from torch import nn
 
 from diffusiongym.schedulers import Scheduler
-from diffusiongym.types import DDMixin
-
-OutputType = Literal["epsilon", "endpoint", "velocity", "score"]
+from diffusiongym.types import DDBatch
 
 
-class BaseModel[D: DDMixin](ABC, nn.Module):
+class BaseModel[D: DDBatch](ABC, nn.Module):
     """Abstract base class for base models used in flow matching and diffusion."""
 
-    output_type: OutputType
+    output_type: Literal["epsilon", "endpoint", "velocity", "score"]
 
     def __init__(self, device: torch.device | None):
         super().__init__()

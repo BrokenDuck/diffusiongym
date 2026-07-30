@@ -29,6 +29,7 @@ class OneDimensionalBaseModel(BaseModel[DDTensor]):
         self,
         device: torch.device | None,
         scheduler: Scheduler[DDTensor] | None = None,
+        output_type: str = "velocity",
     ):
         super().__init__(device)
 
@@ -36,6 +37,7 @@ class OneDimensionalBaseModel(BaseModel[DDTensor]):
             device = torch.device("cpu")
 
         self.device = device
+        self.output_type = output_type
 
         if scheduler is None:
             scheduler = OptimalTransportScheduler()
@@ -48,8 +50,8 @@ class OneDimensionalBaseModel(BaseModel[DDTensor]):
         )
         data = [DDTensor(p1.sample((4096, 1)).to(device))]
 
-        mlp = MLP(1, 1).to(device)
-        opt = torch.optim.Adam(mlp.parameters(), lr=1e-3)
+        self.model = MLP(1, 1).to(device)
+        opt = torch.optim.Adam(self.model.parameters(), lr=1e-3)
         train_base_model(self, opt, data, steps=8_000, batch_size=512, pbar=True)
 
     @property
@@ -110,7 +112,9 @@ class MLP(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.time_embed = SinusoidalTimeEmbedding(time_dim, cond_dim, window_size, t_mult)
+        self.time_embed = SinusoidalTimeEmbedding(
+            time_dim, cond_dim, window_size, t_mult
+        )
 
         blocks = [Block(in_dim, width, cond_dim)]
         for _ in range(depth - 1):
@@ -170,18 +174,22 @@ class SinusoidalTimeEmbedding(nn.Module):
         t_mult: float = 1000.0,
     ) -> None:
         super().__init__()
-        self.mlp = nn.Sequential(nn.Linear(dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim))
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim)
+        )
 
         self.t_mult = t_mult
         half = dim // 2
-        freqs = torch.exp(-math.log(window_size) * torch.arange(half, dtype=torch.float32) / half)
+        freqs = torch.exp(
+            -math.log(window_size) * torch.arange(half, dtype=torch.float32) / half
+        )
         self.register_buffer("freqs", freqs)
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """Compute sinusoidal time embedding."""
         # Assuming t is in [0, 1], scale to [0, t_mult] as is usual for diffusion models
         t = t.float() * self.t_mult
-        args = t.unsqueeze(-1) * self.freqs.unsqueeze(-2)
+        args = t.unsqueeze(-1) * self.freqs.unsqueeze(-2)  # ty: ignore[call-non-callable]
         emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
         result: torch.Tensor = self.mlp(emb)
         return result

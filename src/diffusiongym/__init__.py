@@ -29,13 +29,12 @@ from diffusiongym.schedulers import (
     Scheduler,
 )
 from diffusiongym.train import train_base_model
-from diffusiongym.types import D, DDMixin, DDTensor
+from diffusiongym.types import DDBatch, DDTensor
 
 __all__ = [
     "BaseModel",
     "ConstantNoiseSchedule",
     "CosineScheduler",
-    "D",
     "DDMixin",
     "DDTensor",
     "DiffusionScheduler",

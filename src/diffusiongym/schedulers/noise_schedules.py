@@ -3,10 +3,10 @@
 import torch
 
 from diffusiongym.schedulers.base import NoiseSchedule
-from diffusiongym.types import DDMixin
+from diffusiongym.types import DDBatch
 
 
-class ConstantNoiseSchedule[D: DDMixin](NoiseSchedule[D]):
+class ConstantNoiseSchedule[D: DDBatch](NoiseSchedule[D]):
     """Constant noise schedule with fixed sigma.
 
     Parameters

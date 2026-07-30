@@ -1,24 +1,27 @@
-"""Custom types for diffusiongym."""
-
-from typing import Callable, Protocol, Self, Sequence, TypeVar
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
+from typing import Self
 
 import torch
 
 type UnaryOp = Callable[[torch.Tensor], torch.Tensor]
 type BinaryOp = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
-D = TypeVar("D", bound="DDMixin")
 
+class DDBatch(ABC):
+    """Abstract data batch for common functionality."""
 
-class DDProtocol(Protocol):
-    """Diffusion data protocol."""
-
+    @abstractmethod
     def __len__(self) -> int: ...
+
+    @abstractmethod
     def __getitem__(self, idx: int | slice) -> Self: ...
 
     @classmethod
-    def collate(cls: type[Self], items: Sequence[Self]) -> Self: ...
+    @abstractmethod
+    def collate(cls, items: Sequence[Self]) -> Self: ...
 
+    @abstractmethod
     def aggregate(self, reduction: str = "mean") -> torch.Tensor:
         """Reduce over all dimensions except batch (i.e., sum per sample).
 
@@ -33,10 +36,12 @@ class DDProtocol(Protocol):
         """
         ...
 
+    @abstractmethod
     def apply(self, op: UnaryOp) -> Self:
         """Apply a function to the underlying tensor data (e.g., x -> -x)."""
         ...
 
+    @abstractmethod
     def combine(self, other: Self, op: BinaryOp) -> Self:
         """Combine self with another instance element-wise (e.g., x + y).
 
@@ -44,10 +49,6 @@ class DDProtocol(Protocol):
         scalar broadcasting before calling this.
         """
         ...
-
-
-class DDMixin(DDProtocol):
-    """Diffusion data mixin for common functionality."""
 
     @property
     def device(self) -> torch.device:
@@ -68,7 +69,9 @@ class DDMixin(DDProtocol):
         self.apply(get_tensor)
 
         if dev is None:
-            raise RuntimeError(f"No tensors found in {self.__class__} to determine device.")
+            raise RuntimeError(
+                f"No tensors found in {self.__class__} to determine device."
+            )
 
         return dev
 
@@ -78,43 +81,49 @@ class DDMixin(DDProtocol):
     def cpu(self) -> Self:
         return self.apply(lambda x: x.cpu())
 
-    def _binary_dispatch(self, other: Self | float | torch.Tensor, op: BinaryOp) -> Self:
+    def _binary_dispatch(
+        self, other: Self | float | torch.Tensor, op: BinaryOp
+    ) -> Self:
         if isinstance(other, torch.Tensor):
             return self.apply(lambda x: op(x, other))
 
         if isinstance(other, (int, float)):
-            return self.apply(lambda x: op(x, torch.tensor(other, device=x.device, dtype=x.dtype)))
+            return self.apply(
+                lambda x: op(x, torch.tensor(other, device=x.device, dtype=x.dtype))
+            )
 
         if type(other) is self.__class__:
             return self.combine(other, op)
 
-        raise TypeError(f"Unsupported operand type(s) for operation: {self.__class__} and {type(other)}")
+        raise TypeError(
+            f"Unsupported operand type(s) for operation: {self.__class__} and {type(other)}"
+        )
 
-    def __add__(self, other):
+    def __add__(self, other) -> Self:
         return self._binary_dispatch(other, torch.add)
 
-    def __sub__(self, other):
+    def __sub__(self, other) -> Self:
         return self._binary_dispatch(other, torch.sub)
 
-    def __mul__(self, other):
+    def __mul__(self, other) -> Self:
         return self._binary_dispatch(other, torch.mul)
 
-    def __truediv__(self, other):
+    def __truediv__(self, other) -> Self:
         return self._binary_dispatch(other, torch.div)
 
-    def __neg__(self):
+    def __neg__(self) -> Self:
         return self.apply(torch.neg)
 
-    def __pow__(self, power):
+    def __pow__(self, power) -> Self:
         return self.apply(lambda x: torch.pow(x, power))
 
-    def __radd__(self, other):
+    def __radd__(self, other) -> Self:
         return self._binary_dispatch(other, lambda x, y: torch.add(y, x))
 
-    def __rsub__(self, other):
+    def __rsub__(self, other) -> Self:
         return self._binary_dispatch(other, lambda x, y: torch.sub(y, x))
 
-    def __rmul__(self, other):
+    def __rmul__(self, other) -> Self:
         return self._binary_dispatch(other, lambda x, y: torch.mul(y, x))
 
     def square(self) -> Self:
@@ -158,7 +167,12 @@ class DDMixin(DDProtocol):
         """Return a new instance detached from the current computation graph."""
         return self.apply(torch.detach)
 
-    def gradient(self, outputs: torch.Tensor, create_graph: bool = False, retain_graph: bool = False) -> Self:
+    def gradient(
+        self,
+        outputs: torch.Tensor,
+        create_graph: bool = False,
+        retain_graph: bool = False,
+    ) -> Self:
         """Compute the gradient of output w.r.t. self.
 
         Returns: An instance of Self containing the gradients.
@@ -191,57 +205,3 @@ class DDMixin(DDProtocol):
             return g if g is not None else torch.zeros_like(x)
 
         return self.apply(inject_grads)
-
-
-class DDTensor(DDMixin):
-    """A DDType wrapper around torch.Tensor."""
-
-    def __init__(self, data: torch.Tensor):
-        if not isinstance(data, torch.Tensor):
-            raise TypeError("DDTensor expects a torch.Tensor")
-
-        if data.ndim < 1:
-            raise ValueError("DDTensor expects a tensor with at least 1 dimension")
-
-        self.data = data
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(shape={tuple(self.data.shape)}, dtype={self.data.dtype}, device={self.data.device})"
-
-    def __len__(self) -> int:
-        return self.data.shape[0]
-
-    def __getitem__(self, idx: int | slice) -> Self:
-        data_out = self.data[idx]
-
-        if data_out.ndim < self.data.ndim:
-            data_out = data_out.unsqueeze(0)
-
-        return self.__class__(data_out)
-
-    @classmethod
-    def collate(cls, items: Sequence[Self]) -> Self:
-        if not items:
-            raise ValueError("Cannot collate an empty sequence")
-
-        tensors = [item.data for item in items]
-        return cls(torch.cat(tensors, dim=0))
-
-    def aggregate(self, reduction: str = "mean") -> torch.Tensor:
-        dims = tuple(range(1, self.data.ndim))
-        reducers = {
-            "mean": torch.mean,
-            "sum": torch.sum,
-        }
-
-        reducer = reducers.get(reduction, None)
-        if reducer is None:
-            raise ValueError(f"Unsupported reduction type: {reduction}")
-
-        return reducer(self.data, dim=dims)
-
-    def apply(self, op: UnaryOp) -> Self:
-        return self.__class__(op(self.data))
-
-    def combine(self, other: Self, op: BinaryOp) -> Self:  # ty:ignore[invalid-method-override]
-        return self.__class__(op(self.data, other.data))

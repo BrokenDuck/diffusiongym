@@ -4,10 +4,10 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from diffusiongym.types import DDMixin
+from diffusiongym.types import DDBatch
 
 
-class NoiseSchedule[D: DDMixin](ABC):
+class NoiseSchedule[D: DDBatch](ABC):
     r"""Abstract base class for noise schedules :math:`\sigma(t)`."""
 
     @abstractmethod
@@ -31,7 +31,7 @@ class NoiseSchedule[D: DDMixin](ABC):
         ...
 
 
-class Scheduler[D: DDMixin](ABC):
+class Scheduler[D: DDBatch](ABC):
     r"""Abstract base class for schedulers of flow matching models.
 
     Generally :math:`\beta_t = 1-\alpha_t`, but this can be re-defined.
@@ -157,7 +157,7 @@ class Scheduler[D: DDMixin](ABC):
         return beta * ((alpha_dot / alpha) * beta - beta_dot)
 
 
-class MemorylessNoiseSchedule[D: DDMixin](NoiseSchedule):
+class MemorylessNoiseSchedule[D: DDBatch](NoiseSchedule):
     r"""Memoryless noise schedule (https://arxiv.org/abs/2409.08861) based on the scheduler's eta function.
 
     This schedule ensures that :math:`x_0` and :math:`x_1` are independent, which is necessary for

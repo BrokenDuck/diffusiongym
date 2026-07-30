@@ -3,10 +3,10 @@ r"""Environment where the base model predicts the noise :math:`\epsilon(x, t)`."
 import torch
 
 from diffusiongym.environments.base import Environment
-from diffusiongym.types import DDMixin
+from diffusiongym.types import DDBatch
 
 
-class EpsilonEnvironment[D: DDMixin](Environment[D]):
+class EpsilonEnvironment[D: DDBatch](Environment[D]):
     r"""Environment where the base model predicts the noise :math:`\epsilon(x, t)`."""
 
     def drift_from_prediction(

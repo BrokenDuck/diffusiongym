@@ -1,6 +1,6 @@
 """Factory function for creating diffusiongym environments."""
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
 
@@ -14,7 +14,7 @@ from diffusiongym.environments import (
 )
 from diffusiongym.registry import base_model_registry, reward_registry
 from diffusiongym.rewards import Reward
-from diffusiongym.types import DDMixin
+from diffusiongym.types import DDBatch
 
 
 def make(
@@ -22,9 +22,9 @@ def make(
     reward: str,
     discretization_steps: int,
     reward_scale: float = 1.0,
-    device: Optional[torch.device | str] = None,
-    base_model_kwargs: Optional[dict[str, Any]] = None,
-    reward_kwargs: Optional[dict[str, Any]] = None,
+    device: torch.device | str | None = None,
+    base_model_kwargs: dict[str, Any] | None = None,
+    reward_kwargs: dict[str, Any] | None = None,
 ) -> Environment[Any]:
     """Create a diffusiongym environment from registered base models and rewards.
 
@@ -92,10 +92,12 @@ def make(
     base_model_inst = base_model_entry.instantiate(device=device, **base_model_kwargs)
     reward_inst = reward_entry.instantiate(**reward_kwargs)
 
-    return construct_env(base_model_inst, reward_inst, discretization_steps, reward_scale)
+    return construct_env(
+        base_model_inst, reward_inst, discretization_steps, reward_scale
+    )
 
 
-def construct_env[D: DDMixin](
+def construct_env[D: DDBatch](
     base_model: BaseModel[D],
     reward: Reward[D],
     discretization_steps: int,
@@ -130,7 +132,9 @@ def construct_env[D: DDMixin](
     # Determine environment class from base model's output type
     env_type = base_model.output_type
     if env_type not in env_classes:
-        raise ValueError(f"Any env_type: {env_type}. Available: {', '.join(env_classes.keys())}")
+        raise ValueError(
+            f"Any env_type: {env_type}. Available: {', '.join(env_classes.keys())}"
+        )
 
     env_class = env_classes[env_type]
     return env_class(base_model, reward, discretization_steps, reward_scale)
