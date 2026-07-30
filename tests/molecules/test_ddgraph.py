@@ -13,7 +13,6 @@ from diffusiongym.molecules.types import (
     construct_ue_mask,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -21,7 +20,7 @@ from diffusiongym.molecules.types import (
 
 def _make_batch(n_nodes_list: list[int]) -> Batch:
     """Build a Batch of complete-graph molecules with given node counts."""
-    from flowmol.data_processing.utils import build_edge_idxs
+    from flowmol.data_processing.utils import build_edge_idxs  # noqa: PLC0415
 
     return Batch.from_data_list([Data(edge_index=build_edge_idxs(n), num_nodes=n) for n in n_nodes_list])
 
@@ -165,7 +164,7 @@ class TestDDGraphGetitem:
     def test_invalid_type_raises(self) -> None:
         ddg = _make_ddgraph([3])
         with pytest.raises(TypeError):
-            _ = ddg["bad"][index]
+            _ = ddg["bad"]
 
 
 # ---------------------------------------------------------------------------

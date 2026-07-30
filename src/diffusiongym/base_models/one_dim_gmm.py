@@ -11,8 +11,9 @@ from torch import nn
 from diffusiongym.base_models.base import BaseModel
 from diffusiongym.registry import base_model_registry
 from diffusiongym.schedulers import OptimalTransportScheduler, Scheduler
+from diffusiongym.train import train_base_model
 from diffusiongym.types import DDTensor
-from diffusiongym.utils import append_dims, train_base_model
+from diffusiongym.utils import append_dims
 
 
 @base_model_registry.register("1d/gmm")
