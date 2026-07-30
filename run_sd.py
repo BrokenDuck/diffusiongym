@@ -76,10 +76,3 @@ for i in range(len(sample.sample)):
     save_image(sample.sample.data[i], path)
     print(f"  Saved: {path}")
 
-# Open final images in Windows viewer
-import subprocess
-
-for i in range(len(sample.sample)):
-    wsl_path = str((output_dir / f"final_sample{i}.png").resolve())
-    win_path = subprocess.check_output(["wslpath", "-w", wsl_path], text=True).strip()
-    subprocess.Popen(["cmd.exe", "/c", "start", "", win_path])
