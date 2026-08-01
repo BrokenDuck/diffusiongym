@@ -33,7 +33,7 @@ class DDDataset[D: DDBatch](Dataset[DDDatasetD[D]]):
             for i in range(len(batch)):
                 all_kwargs.append(index_dict(kwarg, i))
 
-        self.data = type(batches[0]).collate(batches)
+        self.data = type(batches[0]).concat(batches)
         self.kwargs: dict = default_collate(all_kwargs)
         self.weights = (
             torch.ones(len(self.data)) if weights is None else torch.cat(weights, dim=0)
@@ -50,7 +50,7 @@ class DDDataset[D: DDBatch](Dataset[DDDatasetD[D]]):
 
     def collate(self, batch: list[DDDatasetD[D]]):
         data_batch, kwargs_batch, weight_batch = zip(*batch, strict=False)
-        data_batch = type(data_batch[0]).collate(list(data_batch))
+        data_batch = type(data_batch[0]).concat(list(data_batch))
         kwargs_batch = default_collate(kwargs_batch)
         weight_batch = default_collate(weight_batch)
         return data_batch, kwargs_batch, weight_batch

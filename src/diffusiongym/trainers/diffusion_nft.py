@@ -1,178 +1,191 @@
-"""Diffusion NFT (DPO-style contrastive fine-tuning for diffusion models)."""
+"""DiffusionNFT: DPO-style contrastive fine-tuning for flow models.
 
-import copy
-import logging
-from collections.abc import Callable
-from pathlib import Path
-from typing import Any
+Algorithm (Theorem 3.2 of the NFT paper):
+  1. Roll out the EMA sampling policy to collect endpoints.
+  2. Map rewards to optimality probabilities r in [0,1].
+  3. For each training batch, compute the positive and negative blended predictions:
+       v_pos = (1-β)*v_old + β*v_new   → regressed toward FM target
+       v_neg = (1+β)*v_old - β*v_new   → pushed away from FM target
+  4. Loss = r * error(v_pos, target) + (1-r) * error(v_neg, target)
+  5. EMA-update the sampling policy toward the train policy.
+
+The rollout policy (v_old) lags behind the train policy via EMA. This prevents
+collapse while still improving the sampling distribution over time.
+"""
+
+from collections.abc import Mapping
 
 import torch
-from torch import nn
-from torch.utils.data import DataLoader
+from torch import Generator, Tensor
 
-from diffusiongym.environments import Environment
-from diffusiongym.train import DDDataset
-from diffusiongym.trainers._utils import RunningRewardStats, filter_valid
+from diffusiongym.core.dynamics import FlowDynamics
+from diffusiongym.core.rollout import RolloutRequest, RolloutStorage
+from diffusiongym.trainers.base import (
+    EndpointExperience,
+    FineTuningAlgorithm,
+    FineTuningContext,
+    FineTuningRequirements,
+)
+from diffusiongym.trainers.orw_cfm import _index_conditioning, _RewardStats
 from diffusiongym.types import DDBatch
 
 
-def diffusion_nft[D: DDBatch](
-    env: Environment[D],
-    samples_per_iter: int,
-    sample_batch_size: int,
-    ft_batch_size: int,
-    num_iterations: int = 100,
-    beta: float = 1.0,
-    ema_decay: float = 0.995,
-    inner_epochs: int = 10,
-    lr: float = 1e-4,
-    postprocess_latents: Callable[[D], D] | None = None,
-    log_every: int | None = None,
-    exp_dir: Path | None = None,
+class DiffusionNFT[StateT: DDBatch, RawT](
+    FineTuningAlgorithm[StateT, RawT, EndpointExperience[StateT]]
 ):
-    """Diffusion NFT fine-tuning via DPO-style contrastive objectives.
-
-    Maintains an EMA old/sampling policy, constructs per-sample optimality
-    probabilities from group-normalized rewards, and applies positive/negative
-    prediction blending per the NFT paper (Theorem 3.2).
+    """DPO-style contrastive fine-tuning for flow models.
 
     Parameters
     ----------
-    env:
-        Environment. env.policy is set to a slow-moving EMA copy used for
-        sampling; env.base_model is the trainable model.
-    samples_per_iter:
-        Endpoints to sample per outer iteration.
-    sample_batch_size:
-        Batch size for env.batch_sample.
-    ft_batch_size:
-        Mini-batch size for the inner training loop.
-    num_iterations:
-        Total outer iterations.
     beta:
-        Contrastive blending coefficient (β=1 → full positive/negative flip).
+        Contrastive blending coefficient.
+        β=1 → full positive/negative flip.
+        β=0 → no change from the old policy.
     ema_decay:
-        EMA decay for the sampling policy (0.995 → slow-moving). Should be
-        close to 1 so the sampling policy lags behind training.
+        EMA decay for the sampling (rollout) policy.
+        Close to 1 means the rollout policy lags behind training.
     inner_epochs:
-        Training epochs over each sampled batch.
-    lr:
-        AdamW learning rate.
-    postprocess_latents:
-        Optional transform applied to sampled latents before training.
-    log_every:
-        Log every this many iterations (default: 1% of total).
-    exp_dir:
-        If provided, checkpoints saved here as last.pt.
+        Training epochs over each collected batch.
+    batch_size:
+        Mini-batch size for inner training.
+    halflife_iters:
+        EMA halflife for reward normalization.
     """
-    if exp_dir is not None:
-        exp_dir.mkdir(parents=True, exist_ok=True)
 
-    if log_every is None:
-        log_every = max(1, num_iterations // 100)
+    def __init__(
+        self,
+        *,
+        beta: float = 1.0,
+        ema_decay: float = 0.995,
+        inner_epochs: int = 10,
+        batch_size: int = 64,
+        halflife_iters: float = 10.0,
+    ) -> None:
+        self.beta = beta
+        self.ema_decay = ema_decay
+        self.inner_epochs = inner_epochs
+        self.batch_size = batch_size
+        self._reward_stats = _RewardStats(halflife_iters=halflife_iters)
 
-    # env.policy = slow-moving EMA copy used for sampling.
-    # env.base_model = trainable model.
-    env.policy = copy.deepcopy(env.base_model)
-    opt = torch.optim.AdamW(env.base_model.parameters(), lr=lr)
-
-    reward_stats = RunningRewardStats(halflife_iters=0.1 * num_iterations)
-
-    for it in range(1, num_iterations + 1):
-        # ------------------------------------------------------------------
-        # 1. Sample endpoints using the EMA sampling policy.
-        # ------------------------------------------------------------------
-        sample = env.batch_sample(samples_per_iter, sample_batch_size)
-        latents, rewards, kwargs = filter_valid(sample)
-
-        if postprocess_latents is not None:
-            latents = postprocess_latents(latents)
-
-        # ------------------------------------------------------------------
-        # 2. Optimality probabilities from EMA-normalized rewards.
-        # ------------------------------------------------------------------
-        reward_stats.update(rewards)
-        r_norm = reward_stats.normalize(rewards)
-        # Map to [0, 1]: r=1 means "definitely positive", r=0 "definitely negative".
-        r = (0.5 + 0.5 * r_norm.clamp(-1, 1)).to(env.device)
-
-        # ------------------------------------------------------------------
-        # 3–6. Forward-process training with contrastive blending.
-        # ------------------------------------------------------------------
-        dataset = DDDataset([latents.to(env.device)], [kwargs], [r])
-        loader = DataLoader(
-            dataset,
-            ft_batch_size,
-            shuffle=True,
-            collate_fn=dataset.collate,
-            num_workers=0,
-            pin_memory=False,
+    @property
+    def requirements(self) -> FineTuningRequirements:
+        return FineTuningRequirements(
+            needs_reference_policy=False,
+            needs_stochastic_rollout=False,
+            rollout_storage=RolloutStorage(),
         )
 
-        env.base_model.train()
+    def collect(
+        self,
+        *,
+        context: FineTuningContext[StateT, RawT],
+        dynamics: FlowDynamics[StateT],
+        n: int,
+        time_grid: Tensor,
+        conditioning: Mapping[str, object],
+        generator: Generator | None = None,
+    ) -> EndpointExperience[StateT]:
+        request = RolloutRequest(
+            time_grid=time_grid,
+            storage=self.requirements.rollout_storage,
+            evaluate_reward=True,
+        )
+        rollout = context.ode_sampler.rollout(
+            environment=context.environment,
+            model=context.policies.rollout,
+            dynamics=dynamics,
+            n=n,
+            conditioning=conditioning,
+            request=request,
+            generator=generator,
+        )
+        assert rollout.reward is not None
+        return EndpointExperience(
+            latent=rollout.terminal_latent,
+            rewards=rollout.reward.rewards,
+            valid=rollout.reward.valid,
+            conditioning=rollout.conditioning,
+        )
 
-        x1: D
-        batch_kwargs: dict[str, Any]
-        opt_prob: torch.Tensor
-        for _ in range(inner_epochs):
-            for x1, batch_kwargs, opt_prob in loader:
-                x1 = x1.to(env.device)
-                opt_prob = opt_prob.to(env.device)
+    def update(
+        self,
+        *,
+        context: FineTuningContext[StateT, RawT],
+        experience: EndpointExperience[StateT],
+    ) -> Mapping[str, float]:
+        env = context.environment
+        train_model = context.policies.train
+        rollout_model = context.policies.rollout
+        opt = context.optimizer
+        device = train_model.device
 
-                # Standard forward-process interpolation.
-                x0 = x1.randn_like()
-                t = torch.rand(len(x1), device=env.device)
-                alpha = env.scheduler.alpha(x1, t)
-                beta_t = env.scheduler.beta(x1, t)
-                xt = alpha * x1 + beta_t * x0
+        rewards = experience.rewards
+        valid = experience.valid
+        valid_rewards = rewards[valid] if valid is not None else rewards
 
-                new_pred = env.base_model(xt, t, **batch_kwargs)
-                with torch.no_grad():
-                    old_pred = env.policy(xt, t, **batch_kwargs)
+        self._reward_stats.update(valid_rewards)
+        r_norm = self._reward_stats.normalize(rewards)
+        # Map normalized rewards to [0,1] optimality probability
+        r = (0.5 + 0.5 * r_norm.clamp(-1.0, 1.0)).to(device)
 
-                # Contrastive blending (Theorem 3.2):
-                # v_pos = (1-β)v_old + β*v_new  →  regressed against FM target
-                # v_neg = (1+β)v_old - β*v_new  →  pushed away from FM target
-                pos_pred = (1 - beta) * old_pred + beta * new_pred
-                neg_pred = (1 + beta) * old_pred - beta * new_pred
+        latent = experience.latent.to(device)  # type: ignore[attr-defined]
+        n = len(latent)
 
-                pos_loss = env.base_model.train_loss(
-                    x1, xt=xt, t=t, pred=pos_pred, **batch_kwargs
+        total_loss = 0.0
+        steps = 0
+
+        for _ in range(self.inner_epochs):
+            idx = torch.randint(0, n, (min(self.batch_size, n),), device=device)
+            x_data_b = latent[idx]
+            r_b = r[idx]
+            cond_b = _index_conditioning(experience.conditioning, idx)
+
+            batch = env.make_forward_batch(x_data_b, conditioning=cond_b)
+
+            with torch.no_grad():
+                v_old = env.predict_velocity(
+                    rollout_model, x_t=batch.x_t, t=batch.t, conditioning=cond_b
                 )
-                neg_loss = env.base_model.train_loss(
-                    x1, xt=xt, t=t, pred=neg_pred, **batch_kwargs
-                )
 
-                loss = (opt_prob * pos_loss + (1 - opt_prob) * neg_loss).mean()
-                loss.backward()
-                nn.utils.clip_grad_norm_(env.base_model.parameters(), 1.0)
-                opt.step()
-                opt.zero_grad()
-
-        # ------------------------------------------------------------------
-        # 7. EMA update: slowly advance sampling policy toward training model.
-        # θ_old = decay * θ_old + (1-decay) * θ_new
-        # ------------------------------------------------------------------
-        with torch.no_grad():
-            for p_old, p_new in zip(
-                env.policy.parameters(), env.base_model.parameters()
-            ):
-                p_old.data.mul_(ema_decay).add_(p_new.data, alpha=1.0 - ema_decay)
-
-        if it % log_every == 0:
-            metrics = {
-                "r_mean": sample.rewards[sample.valids].mean(),
-                "r_std": sample.rewards[sample.valids].std(),
-                "r_min": sample.rewards[sample.valids].min(),
-                "r_max": sample.rewards[sample.valids].max(),
-                "valid": sample.valids.float().mean(),
-            }
-            logging.info(
-                f"(iter={it:05d}) {', '.join([f'{k}: {v:.2f}' for k, v in metrics.items()])}"
+            v_new = env.predict_velocity(
+                train_model, x_t=batch.x_t, t=batch.t, conditioning=cond_b
             )
 
-        if exp_dir is not None:
-            torch.save(env.base_model.state_dict(), exp_dir / "last.pt")
+            # Contrastive blending
+            v_pos = v_old * (1.0 - self.beta) + v_new * self.beta
+            v_neg = v_old * (1.0 + self.beta) - v_new * self.beta
 
-    env.policy = env.base_model
-    env.base_model.eval()
+            pos_err = env.velocity_error(v_pos, batch.target_velocity)
+            neg_err = env.velocity_error(v_neg, batch.target_velocity)
+
+            loss = (r_b * pos_err + (1.0 - r_b) * neg_err).mean()
+            opt.zero_grad()
+            loss.backward()
+            if hasattr(train_model, "parameters"):
+                torch.nn.utils.clip_grad_norm_(train_model.parameters(), 1.0)  # ty: ignore[call-non-callable]
+            opt.step()
+            total_loss += loss.item()
+            steps += 1
+
+        r_valid = rewards[valid] if valid is not None else rewards
+        return {
+            "loss": total_loss / max(steps, 1),
+            "r_mean": r_valid.mean().item(),
+            "r_std": r_valid.std().item() if len(r_valid) > 1 else 0.0,
+            "valid_frac": valid.float().mean().item() if valid is not None else 1.0,
+        }
+
+    def synchronize_rollout_policy(
+        self,
+        *,
+        context: FineTuningContext[StateT, RawT],
+    ) -> None:
+        """EMA-update the rollout (sampling) policy toward the train policy."""
+        train = context.policies.train
+        rollout = context.policies.rollout
+        if not (hasattr(train, "parameters") and hasattr(rollout, "parameters")):
+            return
+        d = self.ema_decay
+        with torch.no_grad():
+            for p_old, p_new in zip(rollout.parameters(), train.parameters()):  # ty: ignore[call-non-callable]
+                p_old.data.mul_(d).add_(p_new.data, alpha=1.0 - d)

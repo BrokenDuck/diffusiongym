@@ -5,13 +5,27 @@ from typing import Any
 import torch
 
 from diffusiongym.base_models import BaseModel
+from diffusiongym.capabilities import (
+    AffineForwardProcess,
+    DefaultMetric,
+    EndpointParameterization,
+    EndpointSamplingDynamics,
+    EpsilonParameterization,
+    EpsilonSamplingDynamics,
+    ScoreParameterization,
+    ScoreSamplingDynamics,
+    VelocityParameterization,
+    VelocitySamplingDynamics,
+)
 from diffusiongym.environments import (
+    CompositeEnvironment,
     EndpointEnvironment,
     Environment,
     EpsilonEnvironment,
     ScoreEnvironment,
     VelocityEnvironment,
 )
+# construct_env is kept for compatibility with existing code that uses the old Environment API
 from diffusiongym.registry import base_model_registry, reward_registry
 from diffusiongym.rewards import Reward
 from diffusiongym.types import DDBatch
@@ -25,8 +39,8 @@ def make(
     device: torch.device | str | None = None,
     base_model_kwargs: dict[str, Any] | None = None,
     reward_kwargs: dict[str, Any] | None = None,
-) -> Environment[Any]:
-    """Create a diffusiongym environment from registered base models and rewards.
+) -> CompositeEnvironment[Any]:
+    """Create a CompositeEnvironment from registered base models and rewards.
 
     Parameters
     ----------
@@ -48,7 +62,7 @@ def make(
 
     Returns
     -------
-    env : Environment
+    env : CompositeEnvironment
         The created environment.
 
     Raises
@@ -56,8 +70,7 @@ def make(
     KeyError
         If the base_model or reward ID is not registered.
     ValueError
-        If the base_model and reward are incompatible (e.g., mixing images and molecules),
-        or if env_type is not supported.
+        If the base_model and reward are incompatible (e.g., mixing images and molecules).
 
     Examples
     --------
@@ -73,7 +86,6 @@ def make(
     base_model_kwargs = base_model_kwargs or {}
     reward_kwargs = reward_kwargs or {}
 
-    # Validate compatibility
     base_domain = base_model.split("/")[0] if "/" in base_model else None
     reward_domain = reward.split("/")[0] if "/" in reward else None
 
@@ -84,16 +96,79 @@ def make(
             f"(e.g., both 'images' or both 'molecules')."
         )
 
-    # Get registry entries
     base_model_entry = base_model_registry.get(base_model)
     reward_entry = reward_registry.get(reward)
 
-    # Instantiate base model and reward
     base_model_inst = base_model_entry.instantiate(device=device, **base_model_kwargs)
     reward_inst = reward_entry.instantiate(**reward_kwargs)
 
-    return construct_env(
+    return construct_composite_env(
         base_model_inst, reward_inst, discretization_steps, reward_scale
+    )
+
+
+_DYNAMICS_MAP = {
+    "velocity": VelocitySamplingDynamics,
+    "endpoint": EndpointSamplingDynamics,
+    "epsilon": EpsilonSamplingDynamics,
+    "score": ScoreSamplingDynamics,
+}
+
+_PARAM_MAP = {
+    "velocity": VelocityParameterization,
+    "endpoint": EndpointParameterization,
+    "epsilon": EpsilonParameterization,
+    "score": ScoreParameterization,
+}
+
+
+def construct_composite_env[D: DDBatch](
+    base_model: BaseModel[D],
+    reward: Reward[D],
+    discretization_steps: int,
+    reward_scale: float = 1.0,
+) -> CompositeEnvironment[D]:
+    """Construct a CompositeEnvironment from a BaseModel and Reward.
+
+    Parameters
+    ----------
+    base_model : BaseModel[D]
+        The base model to use.
+    reward : Reward[D]
+        The reward function to use.
+    discretization_steps : int
+        The number of discretization steps to use when sampling trajectories.
+    reward_scale : float, default=1.0
+        Scaling factor for the terminal reward function.
+
+    Returns
+    -------
+    env : CompositeEnvironment[D]
+        The created composite environment.
+    """
+    output_type = base_model.output_type
+    if output_type not in _DYNAMICS_MAP:
+        raise ValueError(
+            f"Unknown output_type: {output_type!r}. "
+            f"Available: {', '.join(_DYNAMICS_MAP.keys())}"
+        )
+    from diffusiongym.environments.facade import PolicyBundle
+
+    scheduler = base_model.scheduler
+    dynamics = _DYNAMICS_MAP[output_type](scheduler)
+    parameterization = _PARAM_MAP[output_type]()
+    forward_process = AffineForwardProcess(scheduler)
+    metric = DefaultMetric("mean")
+
+    return CompositeEnvironment(
+        bundle=PolicyBundle(current=base_model),
+        dynamics=dynamics,
+        forward_process=forward_process,
+        parameterization=parameterization,
+        metric=metric,
+        reward=reward,
+        discretization_steps=discretization_steps,
+        reward_scale=reward_scale,
     )
 
 

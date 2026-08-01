@@ -8,7 +8,6 @@ from contextlib import contextmanager
 import torch
 from torch import nn
 
-from diffusiongym.schedulers import NoiseSchedule
 from diffusiongym.types import DDBatch
 
 
@@ -132,7 +131,7 @@ class ValuePolicy[D: DDBatch](nn.Module):
     """
 
     def __init__(
-        self, value_network: nn.Module, noise_schedule: NoiseSchedule[D]
+        self, value_network: nn.Module, noise_schedule: "NoiseSchedule[D]"
     ) -> None:
         super().__init__()
         self.value_network = value_network

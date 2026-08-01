@@ -1,207 +1,192 @@
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Self
 
 import torch
+from torch import Tensor
 
-type UnaryOp = Callable[[torch.Tensor], torch.Tensor]
-type BinaryOp = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+type UnaryOp = Callable[[Tensor], Tensor]
+type BinaryOp = Callable[[Tensor, Tensor], Tensor]
+type BatchIndex = int | slice | Tensor | Sequence[int]
+type Scale = int | float | Tensor
 
 
 class DDBatch(ABC):
-    """Abstract data batch for common functionality."""
+    """A batch of continuous latent states with attached structure.
+
+    Arithmetic acts only on dynamic state tensors. Structural tensors and
+    metadata are preserved from `self`.
+    """
+
+    # ------------------------------------------------------------------
+    # Batch / container
+    # ------------------------------------------------------------------
 
     @abstractmethod
     def __len__(self) -> int: ...
 
     @abstractmethod
-    def __getitem__(self, idx: int | slice) -> Self: ...
+    def index_select(self, index: BatchIndex) -> Self:
+        """Select complete batch elements, preserving a batch dimension."""
+        ...
+
+    def __getitem__(self, index: BatchIndex) -> Self:
+        return self.index_select(index)
 
     @classmethod
     @abstractmethod
-    def collate(cls, items: Sequence[Self]) -> Self: ...
+    def concat(cls, batches: Sequence[Self]) -> Self:
+        """Concatenate complete batches."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Tensor access
+    # ------------------------------------------------------------------
 
     @abstractmethod
-    def aggregate(self, reduction: str = "mean") -> torch.Tensor:
-        """Reduce over all dimensions except batch (i.e., sum per sample).
+    def all_tensors(self) -> Iterable[Tensor]:
+        """All tensors, including structural tensors."""
+        ...
 
-        Parameters
-        ----------
-        reduction : str, default: "mean"
-            Specifies the reduction to apply: "mean" or "sum".
+    @abstractmethod
+    def state_tensors(self) -> tuple[Tensor, ...]:
+        """Floating-point tensors representing the continuous latent state."""
+        ...
 
-        Returns
-        -------
-        Tensor of shape (len(self),)
+    @abstractmethod
+    def replace_state_tensors(self, tensors: Sequence[Tensor]) -> Self:
+        """Return the same structure with new dynamic state tensors."""
+        ...
+
+    @abstractmethod
+    def map_all_tensors(self, op: UnaryOp) -> Self:
+        """Apply an operation to all tensors (state and structural).
+
+        Intended for device movement, cloning, and detaching only.
         """
         ...
 
     @abstractmethod
-    def apply(self, op: UnaryOp) -> Self:
-        """Apply a function to the underlying tensor data (e.g., x -> -x)."""
+    def assert_compatible(self, other: Self) -> None:
+        """Check that two states have identical batch structure."""
         ...
+
+    # ------------------------------------------------------------------
+    # Data-type-specific scalar broadcasting
+    # ------------------------------------------------------------------
 
     @abstractmethod
-    def combine(self, other: Self, op: BinaryOp) -> Self:
-        """Combine self with another instance element-wise (e.g., x + y).
+    def scale(self, coefficient: Scale) -> Self:
+        """Scale dynamic state tensors.
 
-        Note: `other` is guaranteed to be of the same type as `self` because the Mixin handles
-        scalar broadcasting before calling this.
+        A 1-D tensor of shape (batch_size,) is interpreted as one scalar
+        per complete batch element and broadcast appropriately.
         """
         ...
+
+    # ------------------------------------------------------------------
+    # Generic state algebra (implemented in terms of abstract methods)
+    # ------------------------------------------------------------------
+
+    def map_state_tensors(self, op: UnaryOp) -> Self:
+        return self.replace_state_tensors(tuple(op(x) for x in self.state_tensors()))
+
+    def combine_state(self, other: Self, op: BinaryOp) -> Self:
+        if type(other) is not type(self):
+            raise TypeError(
+                f"Cannot combine {type(self).__name__} and {type(other).__name__}."
+            )
+        self.assert_compatible(other)
+        left = self.state_tensors()
+        right = other.state_tensors()
+        if len(left) != len(right):
+            raise RuntimeError("Incompatible number of state tensors.")
+        return self.replace_state_tensors(
+            tuple(op(x, y) for x, y in zip(left, right, strict=True))
+        )
+
+    def __add__(self, other: Self) -> Self:
+        return self.combine_state(other, torch.add)
+
+    def __sub__(self, other: Self) -> Self:
+        return self.combine_state(other, torch.sub)
+
+    def __neg__(self) -> Self:
+        return self.map_state_tensors(torch.neg)
+
+    def __mul__(self, coefficient: Scale) -> Self:
+        return self.scale(coefficient)
+
+    def __rmul__(self, coefficient: Scale) -> Self:
+        return self.scale(coefficient)
+
+    def __truediv__(self, coefficient: Scale) -> Self:
+        if isinstance(coefficient, Tensor):
+            return self.scale(coefficient.reciprocal())
+        if coefficient == 0:
+            raise ZeroDivisionError("Cannot divide a latent state by zero.")
+        return self.scale(1.0 / coefficient)
+
+    def square(self) -> Self:
+        return self.map_state_tensors(torch.square)
+
+    # ------------------------------------------------------------------
+    # Device and graph management
+    # ------------------------------------------------------------------
 
     @property
     def device(self) -> torch.device:
-        # Find the device of the underlying data and make sure all underlying data is on the same
-        # device
-        dev = None
-
-        def get_tensor(x: torch.Tensor) -> torch.Tensor:
-            nonlocal dev
-            if dev is None:
-                dev = x.device
-
-            if dev != x.device:
-                raise RuntimeError(f"Inconsistent devices found in {self.__class__}.")
-
-            return x
-
-        self.apply(get_tensor)
-
-        if dev is None:
+        devices = {t.device for t in self.all_tensors()}
+        if not devices:
+            raise RuntimeError(f"No tensors found in {type(self).__name__}.")
+        if len(devices) != 1:
             raise RuntimeError(
-                f"No tensors found in {self.__class__} to determine device."
+                f"Inconsistent devices in {type(self).__name__}: {devices}."
             )
-
-        return dev
+        return next(iter(devices))
 
     def to(self, device: torch.device | str) -> Self:
-        return self.apply(lambda x: x.to(device))
+        return self.map_all_tensors(lambda x: x.to(device))
 
     def cpu(self) -> Self:
-        return self.apply(lambda x: x.cpu())
-
-    def _binary_dispatch(
-        self, other: Self | float | torch.Tensor, op: BinaryOp
-    ) -> Self:
-        if isinstance(other, torch.Tensor):
-            return self.apply(lambda x: op(x, other))
-
-        if isinstance(other, (int, float)):
-            return self.apply(
-                lambda x: op(x, torch.tensor(other, device=x.device, dtype=x.dtype))
-            )
-
-        if type(other) is self.__class__:
-            return self.combine(other, op)
-
-        raise TypeError(
-            f"Unsupported operand type(s) for operation: {self.__class__} and {type(other)}"
-        )
-
-    def __add__(self, other) -> Self:
-        return self._binary_dispatch(other, torch.add)
-
-    def __sub__(self, other) -> Self:
-        return self._binary_dispatch(other, torch.sub)
-
-    def __mul__(self, other) -> Self:
-        return self._binary_dispatch(other, torch.mul)
-
-    def __truediv__(self, other) -> Self:
-        return self._binary_dispatch(other, torch.div)
-
-    def __neg__(self) -> Self:
-        return self.apply(torch.neg)
-
-    def __pow__(self, power) -> Self:
-        return self.apply(lambda x: torch.pow(x, power))
-
-    def __radd__(self, other) -> Self:
-        return self._binary_dispatch(other, lambda x, y: torch.add(y, x))
-
-    def __rsub__(self, other) -> Self:
-        return self._binary_dispatch(other, lambda x, y: torch.sub(y, x))
-
-    def __rmul__(self, other) -> Self:
-        return self._binary_dispatch(other, lambda x, y: torch.mul(y, x))
-
-    def square(self) -> Self:
-        return self * self
-
-    def randn_like(self) -> Self:
-        def randn_like_to_float(x: torch.Tensor) -> torch.Tensor:
-            if x.dtype.is_floating_point:
-                return torch.randn_like(x)
-
-            return x
-
-        return self.apply(randn_like_to_float)
-
-    def ones_like(self) -> Self:
-        def ones_like_to_float(x: torch.Tensor) -> torch.Tensor:
-            if x.dtype.is_floating_point:
-                return torch.ones_like(x)
-
-            return x
-
-        return self.apply(ones_like_to_float)
-
-    def zeros_like(self) -> Self:
-        def zeros_like_to_float(x: torch.Tensor) -> torch.Tensor:
-            if x.dtype.is_floating_point:
-                return torch.zeros_like(x)
-
-            return x
-
-        return self.apply(zeros_like_to_float)
+        return self.to("cpu")
 
     def clone(self) -> Self:
-        return self.apply(torch.clone)
-
-    def requires_grad(self, mode: bool = True) -> Self:
-        """In-place operation to start recording operations for autograd."""
-        return self.apply(lambda x: x.requires_grad_(mode))
+        return self.map_all_tensors(torch.clone)
 
     def detach(self) -> Self:
-        """Return a new instance detached from the current computation graph."""
-        return self.apply(torch.detach)
+        return self.map_all_tensors(torch.detach)
+
+    # ------------------------------------------------------------------
+    # Autograd over the continuous state only
+    # ------------------------------------------------------------------
+
+    def as_leaf(self, requires_grad: bool = True) -> Self:
+        """Return a detached state whose dynamic tensors are autograd leaves."""
+        return self.map_state_tensors(
+            lambda x: x.detach().requires_grad_(requires_grad)
+        )
 
     def gradient(
         self,
-        outputs: torch.Tensor,
+        outputs: Tensor,
+        *,
         create_graph: bool = False,
         retain_graph: bool = False,
     ) -> Self:
-        """Compute the gradient of output w.r.t. self.
-
-        Returns: An instance of Self containing the gradients.
-        """
-        # Gather inputs
-        inputs = []
-
-        def gather_inputs(x: torch.Tensor) -> torch.Tensor:
-            inputs.append(x)
-            return x
-
-        self.apply(gather_inputs)
-
-        # Compute gradients
-        grad_outputs = torch.ones_like(outputs) if outputs.ndim > 0 else None
-        raw_grads = torch.autograd.grad(
+        inputs = self.state_tensors()
+        if not inputs:
+            raise RuntimeError("The latent state has no dynamic tensors.")
+        grads = torch.autograd.grad(
             outputs=outputs,
             inputs=inputs,
-            grad_outputs=grad_outputs,
+            grad_outputs=(torch.ones_like(outputs) if outputs.ndim > 0 else None),
             create_graph=create_graph,
             retain_graph=retain_graph,
             allow_unused=True,
         )
-
-        # Inject gradients (this is in the same order as we gathered the inputs)
-        grad_iter = iter(raw_grads)
-
-        def inject_grads(x: torch.Tensor) -> torch.Tensor:
-            g = next(grad_iter)
-            return g if g is not None else torch.zeros_like(x)
-
-        return self.apply(inject_grads)
+        completed = tuple(
+            g if g is not None else torch.zeros_like(v)
+            for v, g in zip(inputs, grads, strict=True)
+        )
+        return self.replace_state_tensors(completed)

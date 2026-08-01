@@ -1,7 +1,34 @@
-from diffusiongym.trainers.adjoint_matching import adjoint_matching
-from diffusiongym.trainers.diffusion_nft import diffusion_nft
-from diffusiongym.trainers.flow_grpo import flow_grpo
-from diffusiongym.trainers.orw_cfm import orw_cfm
-from diffusiongym.trainers.reward_weighted_mle import reward_weighted_mle
+"""Fine-tuning algorithms for affine-Gaussian flow models.
 
-__all__ = ["adjoint_matching", "diffusion_nft", "flow_grpo", "orw_cfm", "reward_weighted_mle"]
+All algorithms implement the FineTuningAlgorithm interface:
+  - validate()  — check requirements
+  - collect()   — sample online experience
+  - update()    — gradient step on train policy
+  - synchronize_rollout_policy() — optional EMA/hard-copy
+"""
+
+from diffusiongym.trainers.adjoint_matching import AdjointMatching
+from diffusiongym.trainers.base import (
+    AdjointExperience,
+    EndpointExperience,
+    FineTuningAlgorithm,
+    FineTuningContext,
+    FineTuningRequirements,
+    TrajectoryExperience,
+)
+from diffusiongym.trainers.diffusion_nft import DiffusionNFT
+from diffusiongym.trainers.flow_grpo import FlowGRPO
+from diffusiongym.trainers.orw_cfm import ORWCFM
+
+__all__ = [
+    "FineTuningAlgorithm",
+    "FineTuningContext",
+    "FineTuningRequirements",
+    "EndpointExperience",
+    "TrajectoryExperience",
+    "AdjointExperience",
+    "ORWCFM",
+    "DiffusionNFT",
+    "FlowGRPO",
+    "AdjointMatching",
+]

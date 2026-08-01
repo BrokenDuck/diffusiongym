@@ -567,3 +567,157 @@ class Environment[D: DDBatch](ABC):
             samples.append(self.sample(current_n, pbar=False, **current_kwargs))
 
         return Sample.concat(samples)
+
+    def train_loss(
+        self,
+        x1: D,
+        t: torch.Tensor | None = None,
+        *,
+        weight_fn=None,
+        t_eps: float = 2e-2,
+        **kwargs,
+    ) -> torch.Tensor:
+        r"""Compute one forward pass and a supervised generative-training loss.
+
+        The conditional path is
+
+            x_t = alpha(t) * x1 + beta(t) * x0,
+
+        where ``x1`` is a data sample and ``x0`` is standard Gaussian noise.
+
+        Because ``drift_from_prediction`` returns the complete SDE drift, the
+        regression target is
+
+            b_cond
+                = d/dt x_t
+                + 0.5 * sigma(t)^2 * score_cond,
+
+            score_cond = -x0 / beta(t).
+
+        For a deterministic flow, ``sigma == 0`` and this reduces to the usual
+        conditional flow-matching velocity target.
+
+        Parameters
+        ----------
+        x1:
+            Data samples in the model's state space.
+        t:
+            Optional training times with shape ``(batch_size,)``. If omitted,
+            times are sampled uniformly from the interior of ``[0, 1]``.
+        weight_fn:
+            Optional callable ``weight_fn(t) -> Tensor[batch_size]``. When
+            omitted, the drift-space loss is uniformly weighted.
+        t_eps:
+            Distance from the path endpoints. This prevents singular conversions
+            involving alpha(t), beta(t), or sigma(t).
+        **kwargs:
+            Conditioning arguments passed to the trainable model.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar loss.
+        """
+        batch_size = len(x1)
+
+        # --------------------------------------------------------------
+        # Sample interior training times
+        # --------------------------------------------------------------
+
+        if t is None:
+            t = torch.rand(batch_size, device=x1.device)
+        else:
+            t = t.to(device=x1.device)
+
+            if t.ndim == 0:
+                t = t.expand(batch_size)
+
+            if t.shape != (batch_size,):
+                raise ValueError(
+                    f"Expected t to have shape ({batch_size},), "
+                    f"but received {tuple(t.shape)}."
+                )
+
+        if not 0.0 < t_eps < 0.5:
+            raise ValueError(f"t_eps must lie in (0, 0.5), but received {t_eps}.")
+
+        t = t.clamp(t_eps, 1.0 - t_eps)
+
+        # --------------------------------------------------------------
+        # Sample the conditional interpolation path
+        #
+        # x0: base/noise endpoint at t=0
+        # x1: data endpoint at t=1
+        # --------------------------------------------------------------
+
+        x0 = x1.randn_like()
+
+        alpha = self.scheduler.alpha(x1, t)
+        beta = self.scheduler.beta(x1, t)
+
+        xt = alpha * x1 + beta * x0
+
+        # --------------------------------------------------------------
+        # Exactly one trainable-model forward pass
+        # --------------------------------------------------------------
+
+        if self.policy is not None:
+            prediction = self.policy(xt, t, **kwargs)
+        else:
+            prediction = self.base_model.forward(xt, t, **kwargs)
+
+        predicted_drift = self.drift_from_prediction(xt, t, prediction)
+
+        # --------------------------------------------------------------
+        # Conditional complete-SDE-drift target
+        # --------------------------------------------------------------
+
+        alpha_dot = self.scheduler.alpha_dot(x1, t)
+        beta_dot = self.scheduler.beta_dot(x1, t)
+
+        # Conditional probability-flow velocity:
+        #
+        #   d x_t / dt = alpha_dot * x1 + beta_dot * x0
+        conditional_velocity = alpha_dot * x1 + beta_dot * x0
+
+        # For x_t | x1 ~ N(alpha*x1, beta^2 I):
+        #
+        #   score(x_t | x1) = -x0 / beta
+        conditional_score = -x0 / beta
+
+        # An SDE with diffusion sigma and the same marginals as the
+        # probability-flow ODE has drift
+        #
+        #   b = velocity + 0.5 * sigma^2 * score.
+        sigma = self.scheduler.sigma(xt, t)
+        target_drift = (
+            conditional_velocity + 0.5 * sigma.square() * conditional_score
+        ).detach()
+
+        # --------------------------------------------------------------
+        # Per-example weighted regression
+        # --------------------------------------------------------------
+
+        per_example_loss = (predicted_drift - target_drift).square().aggregate("mean")
+
+        if weight_fn is None:
+            weight = torch.ones_like(t)
+        else:
+            weight = weight_fn(t).to(
+                device=per_example_loss.device,
+                dtype=per_example_loss.dtype,
+            )
+
+            if weight.ndim == 0:
+                weight = weight.expand_as(t)
+
+            if weight.shape != t.shape:
+                raise ValueError(
+                    f"weight_fn must return shape {tuple(t.shape)}, "
+                    f"but returned {tuple(weight.shape)}."
+                )
+
+            if torch.any(weight < 0):
+                raise ValueError("Training-loss weights must be non-negative.")
+
+        return (weight * per_example_loss).mean()

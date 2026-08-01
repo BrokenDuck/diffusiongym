@@ -1,5 +1,6 @@
 """Abstract base class for base models used in flow matching and diffusion models."""
 
+import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 
@@ -98,6 +99,7 @@ class BaseModel[D: DDBatch](ABC, nn.Module):
         """
         return x
 
+    @warnings.deprecated("Method is incorrect for the general case.")
     def train_loss(
         self,
         x1: D,
