@@ -289,6 +289,49 @@ class TestPredictionConverter:
         with pytest.raises(ValueError, match="a\\(t\\)"):
             self.converter.to_velocity(prediction=pred, kind=PredictionKind.ENDPOINT, x_t=x, t=t)
 
+    def test_to_endpoint_identity(self):
+        n, d = 4, 3
+        endpoint = DDTensor(torch.randn(n, d))
+        x_t = DDTensor(torch.randn(n, d))
+        t = torch.rand(n)
+        result = self.converter.to_endpoint(
+            prediction=endpoint, kind=PredictionKind.ENDPOINT, x_t=x_t, t=t
+        )
+        assert torch.allclose(result.data, endpoint.data)
+
+    def test_to_endpoint_inverts_to_velocity(self):
+        """to_endpoint(to_velocity(x1)) == x1 for every interior t, including the
+        schedule boundaries — unlike endpoint/noise-to-velocity, the
+        Wronskian-based inverse has no interior-time restriction."""
+        n, d = 4, 3
+        for t_val in (0.0, 0.3, 0.7, 1.0):
+            t = torch.full((n,), t_val)
+            x_base = DDTensor(torch.randn(n, d))
+            x_data = DDTensor(torch.randn(n, d))
+            a = self.schedule.a(t).unsqueeze(-1)
+            b = self.schedule.b(t).unsqueeze(-1)
+            x_t = DDTensor(a * x_base.data + b * x_data.data)
+            true_v = DDTensor(x_data.data - x_base.data)  # rectified-flow velocity
+
+            recovered = self.converter.to_endpoint(
+                prediction=true_v, kind=PredictionKind.VELOCITY, x_t=x_t, t=t
+            )
+            assert torch.allclose(recovered.data, x_data.data, atol=1e-5), t_val
+
+    def test_to_endpoint_from_noise(self):
+        n, d = 4, 3
+        t = torch.rand(n).clamp(0.05, 0.95)
+        x_base = DDTensor(torch.randn(n, d))
+        x_data = DDTensor(torch.randn(n, d))
+        a = self.schedule.a(t).unsqueeze(-1)
+        b = self.schedule.b(t).unsqueeze(-1)
+        x_t = DDTensor(a * x_base.data + b * x_data.data)
+
+        recovered = self.converter.to_endpoint(
+            prediction=x_base, kind=PredictionKind.NOISE, x_t=x_t, t=t
+        )
+        assert torch.allclose(recovered.data, x_data.data, atol=1e-5)
+
 
 # ---------------------------------------------------------------------------
 # Dynamics

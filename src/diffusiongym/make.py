@@ -1,215 +1,320 @@
-"""Factory function for creating diffusiongym environments."""
+"""Assemble a ready-to-run fine-tuning setup from registry ids.
 
+`make()` turns three strings into everything the training loop needs:
+
+    setup = diffusiongym.make(
+        modality="toy/gmm2d",
+        reward="toy/linear",
+        algorithm="adjoint_matching",
+        discretization_steps=40,
+    )
+    for _ in range(iterations):
+        experience = setup.algorithm.collect(
+            context=setup.context, dynamics=setup.dynamics,
+            n=64, time_grid=setup.time_grid, conditioning={},
+        )
+        metrics = setup.algorithm.update(
+            context=setup.context, experience=experience
+        )
+        setup.algorithm.synchronize_rollout_policy(context=setup.context)
+
+The wiring it removes is not boilerplate — most of it is a choice that has to
+agree with the algorithm, and each disagreement is a silent failure rather than
+a crash:
+
+  * the SDE profile. Adjoint Matching is only correct under the memoryless
+    schedule; Flow-GRPO needs a stochastic but not necessarily memoryless one;
+    ORW-CFM and DiffusionNFT need the deterministic ODE. `make()` reads this off
+    `algorithm.requirements` instead of asking.
+  * the time grid. A marginal-preserving drift carries a kappa(t) = 1/t term, so
+    a stochastic rollout on a grid that touches t=0 is expansive and destroys the
+    trajectory. `make()` returns an interior grid whenever the dynamics are
+    stochastic.
+  * the reference policy, built only for the algorithms that anchor to one.
+  * the differentiable terminal cost, which only Adjoint Matching needs and only
+    some rewards can supply.
+
+`make()` finishes by calling `algorithm.validate()`, so a bad combination fails
+here with a message rather than after a rollout.
+
+Nothing in this module is specific to dense tensors — a `ModalityProvider`
+returning a graph geometry and a graph base sampler assembles identically.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import torch
+from torch import Tensor
 
-from diffusiongym.base_models import BaseModel
-from diffusiongym.capabilities import (
-    AffineForwardProcess,
-    DefaultMetric,
-    EndpointParameterization,
-    EndpointSamplingDynamics,
-    EpsilonParameterization,
-    EpsilonSamplingDynamics,
-    ScoreParameterization,
-    ScoreSamplingDynamics,
-    VelocityParameterization,
-    VelocitySamplingDynamics,
+from diffusiongym.core.dynamics import (
+    AffineFlowMarginalPreservingSDE,
+    FlowDynamics,
+    MemorylessFlowSDE,
+    ProbabilityFlowODE,
 )
-from diffusiongym.environments import (
-    CompositeEnvironment,
-    EndpointEnvironment,
-    Environment,
-    EpsilonEnvironment,
-    ScoreEnvironment,
-    VelocityEnvironment,
+from diffusiongym.core.environment import FlowEnvironment, PolicyBundle
+from diffusiongym.core.kernel import DefaultEulerGaussianKernelFactory
+from diffusiongym.core.model import PredictionConverter, VelocityRegression
+from diffusiongym.core.process import AffineGaussianForwardProcess
+from diffusiongym.core.rollout import EulerMaruyamaSampler, EulerODESampler
+from diffusiongym.core.schedule import ScaledMemorylessDiffusionSchedule
+from diffusiongym.registry import (
+    algorithm_registry,
+    domain_of,
+    modality_registry,
+    reward_provider_registry,
 )
-# construct_env is kept for compatibility with existing code that uses the old Environment API
-from diffusiongym.registry import base_model_registry, reward_registry
-from diffusiongym.rewards import Reward
-from diffusiongym.types import DDBatch
+from diffusiongym.trainers.base import FineTuningContext
+
+type OptimizerFactory = Callable[[Any], torch.optim.Optimizer]
+
+
+@dataclass(frozen=True)
+class FineTuningSetup:
+    """Everything a training loop needs, already checked for consistency.
+
+    Attributes
+    ----------
+    environment:
+        Immutable services (geometry, forward process, regression, reward).
+    context:
+        Environment + policies + optimizer + samplers.
+    algorithm:
+        The configured `FineTuningAlgorithm`.
+    dynamics:
+        The SDE/ODE profile chosen from the algorithm's requirements.
+    time_grid:
+        A grid valid for those dynamics — interior when they are stochastic.
+    """
+
+    environment: FlowEnvironment
+    context: FineTuningContext
+    algorithm: Any
+    dynamics: FlowDynamics
+    time_grid: Tensor
+
+
+def _register_builtins() -> None:
+    """Register the shipped algorithms and providers on first use.
+
+    Imported lazily: `toy/` depends on `core/`, so importing it at module scope
+    would make `diffusiongym.make` part of an import cycle, and it also keeps
+    optional modality dependencies (a VAE, a graph library) off the base import
+    path. Registering the algorithms here rather than in `trainers/__init__.py`
+    keeps the trainers themselves free of any registry dependency.
+    """
+    if "adjoint_matching" in algorithm_registry:
+        return
+
+    from diffusiongym.trainers import (
+        ORWCFM,
+        AdjointMatching,
+        DiffusionNFT,
+        FlowGRPO,
+    )
+
+    algorithm_registry.register("orw_cfm", ORWCFM)
+    algorithm_registry.register("diffusion_nft", DiffusionNFT)
+    algorithm_registry.register("flow_grpo", FlowGRPO)
+    algorithm_registry.register("adjoint_matching", AdjointMatching)
+
+    import diffusiongym.toy.providers  # noqa: F401
 
 
 def make(
-    base_model: str,
+    *,
+    modality: str,
     reward: str,
-    discretization_steps: int,
-    reward_scale: float = 1.0,
+    algorithm: str,
+    discretization_steps: int = 40,
     device: torch.device | str | None = None,
-    base_model_kwargs: dict[str, Any] | None = None,
+    learning_rate: float = 3e-4,
+    optimizer_factory: OptimizerFactory | None = None,
+    noise_scale: float = 0.75,
+    modality_kwargs: dict[str, Any] | None = None,
     reward_kwargs: dict[str, Any] | None = None,
-) -> CompositeEnvironment[Any]:
-    """Create a CompositeEnvironment from registered base models and rewards.
+    algorithm_kwargs: dict[str, Any] | None = None,
+) -> FineTuningSetup:
+    """Build a `FineTuningSetup` from registered ids.
 
     Parameters
     ----------
-    base_model : str
-        The ID of the base model to use (e.g., "images/cifar", "molecules/flowmol").
-    reward : str
-        The ID of the reward function to use (e.g., "images/compression",
-        "molecules/dipole_moment").
-    discretization_steps : int
-        The number of discretization steps to use when sampling trajectories.
-    reward_scale : float, default=1.0
-        Scaling factor for the terminal reward function.
-    device : torch.device, default: cpu
-        The device to run the base model on.
-    base_model_kwargs : dict[str, Any], default: {}
-        Keyword arguments to pass to the base model constructor.
-    reward_kwargs : dict[str, Any], default: {}
-        Keyword arguments to pass to the reward constructor.
-
-    Returns
-    -------
-    env : CompositeEnvironment
-        The created environment.
+    modality:
+        Id in `modality_registry`, e.g. "toy/gmm2d".
+    reward:
+        Id in `reward_provider_registry`, e.g. "toy/linear".
+    algorithm:
+        Id in `algorithm_registry`: "orw_cfm", "diffusion_nft", "flow_grpo",
+        or "adjoint_matching".
+    discretization_steps:
+        Rollout steps. Adjoint Matching integrates its adjoint backward with
+        explicit Euler, so its error accumulates over the trajectory and shows
+        up as an *under-applied* tilt rather than as instability — give it
+        several times more steps than the others (see its module docstring).
+    device:
+        Defaults to CPU.
+    learning_rate:
+        Learning rate for the default Adam optimizer.
+    optimizer_factory:
+        Callable taking the train model and returning an optimizer. Overrides
+        `learning_rate` when given.
+    noise_scale:
+        SDE noise level for algorithms that need stochastic-but-not-memoryless
+        dynamics (Flow-GRPO). Ignored otherwise; memoryless pins it to 1.
+    modality_kwargs, reward_kwargs, algorithm_kwargs:
+        Constructor overrides for the three registered classes.
 
     Raises
     ------
     KeyError
-        If the base_model or reward ID is not registered.
+        If an id is not registered; the message lists what is.
     ValueError
-        If the base_model and reward are incompatible (e.g., mixing images and molecules).
-
-    Examples
-    --------
-    >>> import diffusiongym
-    >>> env = diffusiongym.make(
-    ...     base_model="images/sd2",
-    ...     reward="images/compression",
-    ...     discretization_steps=100,
-    ...     base_model_kwargs={"cfg_scale": 6.5},
-    ...     reward_kwargs={"quality_level": 65},
-    ... )
+        If the modality and reward come from different domains, or the
+        algorithm's requirements cannot be met (for instance Adjoint Matching
+        with a reward that has no differentiable form).
     """
-    base_model_kwargs = base_model_kwargs or {}
-    reward_kwargs = reward_kwargs or {}
+    _register_builtins()
 
-    base_domain = base_model.split("/")[0] if "/" in base_model else None
-    reward_domain = reward.split("/")[0] if "/" in reward else None
-
-    if base_domain and reward_domain and base_domain != reward_domain:
+    modality_domain = domain_of(modality)
+    reward_domain = domain_of(reward)
+    if modality_domain and reward_domain and modality_domain != reward_domain:
         raise ValueError(
-            f"Incompatible base_model and reward domains: '{base_model}' ({base_domain}) "
-            f"and '{reward}' ({reward_domain}). They must be from the same domain "
-            f"(e.g., both 'images' or both 'molecules')."
+            f"Incompatible domains: modality {modality!r} is "
+            f"{modality_domain!r} but reward {reward!r} is {reward_domain!r}. "
+            "They must describe the same kind of data."
         )
 
-    base_model_entry = base_model_registry.get(base_model)
-    reward_entry = reward_registry.get(reward)
+    provider = modality_registry.get(modality).instantiate(**(modality_kwargs or {}))
+    reward_source = reward_provider_registry.get(reward).instantiate(
+        **(reward_kwargs or {})
+    )
+    algo = algorithm_registry.get(algorithm).instantiate(**(algorithm_kwargs or {}))
+    requirements = algo.requirements
 
-    base_model_inst = base_model_entry.instantiate(device=device, **base_model_kwargs)
-    reward_inst = reward_entry.instantiate(**reward_kwargs)
+    device = torch.device(device) if device is not None else torch.device("cpu")
+    geometry = provider.geometry()
+    schedule = provider.schedule()
+    base_sampler = provider.base_sampler()
 
-    return construct_composite_env(
-        base_model_inst, reward_inst, discretization_steps, reward_scale
+    terminal_cost = reward_source.terminal_cost()
+    if requirements.needs_differentiable_terminal_cost and terminal_cost is None:
+        raise ValueError(
+            f"{algorithm!r} requires a differentiable terminal cost, but reward "
+            f"{reward!r} does not provide one. Pair it with a differentiable "
+            "reward, or choose an algorithm that only needs a black-box reward."
+        )
+
+    environment = FlowEnvironment(
+        geometry=geometry,
+        base_sampler=base_sampler,
+        forward_process=AffineGaussianForwardProcess(
+            geometry=geometry, base_sampler=base_sampler, schedule=schedule
+        ),
+        regression=VelocityRegression(
+            geometry=geometry,
+            converter=PredictionConverter(geometry=geometry, schedule=schedule),
+        ),
+        codec=provider.codec(),
+        reward=reward_source.reward(),
+        terminal_cost=terminal_cost,
     )
 
+    dynamics = _make_dynamics(
+        requirements=requirements, schedule=schedule, noise_scale=noise_scale
+    )
 
-_DYNAMICS_MAP = {
-    "velocity": VelocitySamplingDynamics,
-    "endpoint": EndpointSamplingDynamics,
-    "epsilon": EpsilonSamplingDynamics,
-    "score": ScoreSamplingDynamics,
-}
+    train_model = provider.model(device=device)
+    rollout_model = _replica(provider, train_model, device)
+    reference_model = (
+        _replica(provider, train_model, device)
+        if requirements.needs_reference_policy
+        else None
+    )
 
-_PARAM_MAP = {
-    "velocity": VelocityParameterization,
-    "endpoint": EndpointParameterization,
-    "epsilon": EpsilonParameterization,
-    "score": ScoreParameterization,
-}
+    optimizer = (
+        optimizer_factory(train_model)
+        if optimizer_factory is not None
+        else torch.optim.Adam(train_model.parameters(), lr=learning_rate)
+    )
 
+    context = FineTuningContext(
+        environment=environment,
+        policies=PolicyBundle(
+            train=train_model, rollout=rollout_model, reference=reference_model
+        ),
+        optimizer=optimizer,
+        ode_sampler=EulerODESampler(geometry),
+        sde_sampler=EulerMaruyamaSampler(
+            geometry, DefaultEulerGaussianKernelFactory(geometry)
+        ),
+    )
 
-def construct_composite_env[D: DDBatch](
-    base_model: BaseModel[D],
-    reward: Reward[D],
-    discretization_steps: int,
-    reward_scale: float = 1.0,
-) -> CompositeEnvironment[D]:
-    """Construct a CompositeEnvironment from a BaseModel and Reward.
+    time_grid = make_time_grid(
+        discretization_steps, stochastic=dynamics.stochastic, device=device
+    )
 
-    Parameters
-    ----------
-    base_model : BaseModel[D]
-        The base model to use.
-    reward : Reward[D]
-        The reward function to use.
-    discretization_steps : int
-        The number of discretization steps to use when sampling trajectories.
-    reward_scale : float, default=1.0
-        Scaling factor for the terminal reward function.
+    # Fail here rather than after a rollout.
+    algo.validate(context=context, dynamics=dynamics)
 
-    Returns
-    -------
-    env : CompositeEnvironment[D]
-        The created composite environment.
-    """
-    output_type = base_model.output_type
-    if output_type not in _DYNAMICS_MAP:
-        raise ValueError(
-            f"Unknown output_type: {output_type!r}. "
-            f"Available: {', '.join(_DYNAMICS_MAP.keys())}"
-        )
-    from diffusiongym.environments.facade import PolicyBundle
-
-    scheduler = base_model.scheduler
-    dynamics = _DYNAMICS_MAP[output_type](scheduler)
-    parameterization = _PARAM_MAP[output_type]()
-    forward_process = AffineForwardProcess(scheduler)
-    metric = DefaultMetric("mean")
-
-    return CompositeEnvironment(
-        bundle=PolicyBundle(current=base_model),
+    return FineTuningSetup(
+        environment=environment,
+        context=context,
+        algorithm=algo,
         dynamics=dynamics,
-        forward_process=forward_process,
-        parameterization=parameterization,
-        metric=metric,
-        reward=reward,
-        discretization_steps=discretization_steps,
-        reward_scale=reward_scale,
+        time_grid=time_grid,
     )
 
 
-def construct_env[D: DDBatch](
-    base_model: BaseModel[D],
-    reward: Reward[D],
+def make_time_grid(
     discretization_steps: int,
-    reward_scale: float = 1.0,
-) -> Environment[D]:
-    """Construct an environment, based on the base model's output type.
+    *,
+    stochastic: bool,
+    device: torch.device | str | None = None,
+) -> Tensor:
+    """Time grid valid for the given dynamics.
 
-    Parameters
-    ----------
-    base_model : BaseModel[D]
-        The base model to use.
-    reward : Reward[D]
-        The reward function to use.
-    discretization_steps : int
-        The number of discretization steps to use when sampling trajectories.
-    reward_scale : float, default=1.0
-        Scaling factor for the terminal reward function.
-
-    Returns
-    -------
-    env : Environment[D]
-        The created environment.
+    Stochastic dynamics get an interior grid. The drift of a marginal-preserving
+    SDE carries a kappa(t) = 1/t term, so the deterministic part of an
+    Euler-Maruyama step at t=0 *expands* the state instead of contracting it —
+    with T=10 the mean update becomes x -> -9x and the trajectory leaves the data
+    manifold entirely. Steps of 1/(T+1) starting at t=1/(T+1) keep dt/t <= 1
+    everywhere.
     """
-    # Create environment based on type
-    env_classes: dict[str, type[Environment[Any]]] = {
-        "epsilon": EpsilonEnvironment,
-        "endpoint": EndpointEnvironment,
-        "score": ScoreEnvironment,
-        "velocity": VelocityEnvironment,
-    }
-
-    # Determine environment class from base model's output type
-    env_type = base_model.output_type
-    if env_type not in env_classes:
+    if discretization_steps < 1:
         raise ValueError(
-            f"Any env_type: {env_type}. Available: {', '.join(env_classes.keys())}"
+            f"discretization_steps must be at least 1, got {discretization_steps}."
         )
+    if stochastic:
+        return torch.linspace(0.0, 1.0, discretization_steps + 2, device=device)[1:]
+    return torch.linspace(0.0, 1.0, discretization_steps + 1, device=device)
 
-    env_class = env_classes[env_type]
-    return env_class(base_model, reward, discretization_steps, reward_scale)
+
+def _make_dynamics(*, requirements, schedule, noise_scale: float) -> FlowDynamics:
+    """Pick the SDE/ODE profile the algorithm's requirements imply."""
+    if requirements.needs_memoryless_dynamics:
+        return MemorylessFlowSDE(affine_schedule=schedule)
+    if requirements.needs_stochastic_rollout:
+        return AffineFlowMarginalPreservingSDE(
+            affine_schedule=schedule,
+            diffusion_schedule=ScaledMemorylessDiffusionSchedule(
+                schedule, noise_scale
+            ),
+        )
+    return ProbabilityFlowODE()
+
+
+def _replica(provider, train_model, device: torch.device):
+    """A second model instance carrying the train model's weights.
+
+    Built from the provider rather than deep-copied so that modalities holding
+    non-copyable resources (a VAE handle, a remote weight cache) stay in control
+    of how a replica is produced.
+    """
+    replica = provider.model(device=device)
+    if hasattr(train_model, "state_dict") and hasattr(replica, "load_state_dict"):
+        replica.load_state_dict(train_model.state_dict())
+    return replica

@@ -75,6 +75,26 @@ class RolloutStep[StateT]:
 
 
 @dataclass
+class SMCStats:
+    """Per-rollout resampling diagnostics, produced only by `SMCSampler`.
+
+    ess_trace:
+        Effective sample size *before* the resample decision at each step,
+        shape (num_steps,). ESS == n means the potential has not yet
+        differentiated the particles at all; ESS well below n signals the
+        tilt is concentrating weight on a shrinking subset.
+    resampled:
+        Whether a resample fired at each step, shape (num_steps,).
+    num_resamples:
+        `resampled.sum()`, kept as a plain int for cheap logging.
+    """
+
+    ess_trace: Tensor
+    resampled: Tensor
+    num_resamples: int
+
+
+@dataclass
 class Rollout[StateT, RawT]:
     """Complete rollout output."""
 
@@ -83,6 +103,7 @@ class Rollout[StateT, RawT]:
     reward: RewardBatch | None
     steps: list[RolloutStep[StateT]]
     conditioning: Conditioning
+    smc: SMCStats | None = None
 
 
 class EulerODESampler[StateT: DDBatch, RawT]:

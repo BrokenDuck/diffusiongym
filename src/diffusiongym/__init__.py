@@ -31,9 +31,9 @@ from diffusiongym.core import (
     MarkovKernel,
     MemorylessDiffusionSchedule,
     MemorylessFlowSDE,
+    PolicyBundle,
     PredictionConverter,
     PredictionKind,
-    PolicyBundle,
     ProbabilityFlowODE,
     RectifiedFlowSchedule,
     RewardBatch,
@@ -43,21 +43,23 @@ from diffusiongym.core import (
     RolloutStep,
     RolloutStorage,
     ScalarDiffusionSchedule,
+    SMCSampler,
+    SMCStats,
     TensorGeometry,
     TorchBaseSampler,
     TorchFlowModelAdapter,
     VelocityRegression,
 )
-from diffusiongym.registry import base_model_registry, reward_registry
-from diffusiongym.rewards import DummyReward, Reward
-from diffusiongym.schedulers import (
-    ConstantNoiseSchedule,
-    CosineScheduler,
-    DiffusionScheduler,
-    MemorylessNoiseSchedule,
-    NoiseSchedule,
-    OptimalTransportScheduler,
-    Scheduler,
+from diffusiongym.make import FineTuningSetup, make, make_time_grid
+from diffusiongym.registry import (
+    ModalityProvider,
+    Registry,
+    RewardProvider,
+    algorithm_registry,
+    base_model_registry,
+    modality_registry,
+    reward_provider_registry,
+    reward_registry,
 )
 from diffusiongym.types import DDBatch, DDTensor
 
@@ -66,11 +68,22 @@ __all__ = [
     "AffineFlowMarginalPreservingSDE",
     "AffineGaussianForwardProcess",
     "AffineSchedule",
+    # base
+    "BaseModel",
     "BaseSampler",
     "ConstantDiffusionSchedule",
+    # schedulers (legacy)
+    "ConstantNoiseSchedule",
+    "CosineScheduler",
+    # types
+    "DDBatch",
+    "DDTensor",
     "DataCodec",
     "DefaultEulerGaussianKernelFactory",
     "DifferentiableTerminalCost",
+    "DiffusionScheduler",
+    # rewards
+    "DummyReward",
     "DynamicsCoefficients",
     "EulerGaussianKernelFactory",
     "EulerMaruyamaSampler",
@@ -85,39 +98,40 @@ __all__ = [
     "MarkovKernel",
     "MemorylessDiffusionSchedule",
     "MemorylessFlowSDE",
+    "MemorylessNoiseSchedule",
+    "NoiseSchedule",
+    "OptimalTransportScheduler",
+    "PolicyBundle",
     "PredictionConverter",
     "PredictionKind",
-    "PolicyBundle",
     "ProbabilityFlowODE",
     "RectifiedFlowSchedule",
+    "Reward",
     "RewardBatch",
     "RewardEvaluator",
     "Rollout",
     "RolloutRequest",
     "RolloutStep",
     "RolloutStorage",
+    "SMCSampler",
+    "SMCStats",
     "ScalarDiffusionSchedule",
+    "Scheduler",
     "TensorGeometry",
     "TorchBaseSampler",
     "TorchFlowModelAdapter",
     "VelocityRegression",
-    # base
-    "BaseModel",
-    # registry
+    # assembly
+    "FineTuningSetup",
+    "ModalityProvider",
+    "Registry",
+    "RewardProvider",
+    "algorithm_registry",
+    "make",
+    "make_time_grid",
+    "modality_registry",
+    "reward_provider_registry",
+    # registry (legacy)
     "base_model_registry",
     "reward_registry",
-    # rewards
-    "DummyReward",
-    "Reward",
-    # schedulers (legacy)
-    "ConstantNoiseSchedule",
-    "CosineScheduler",
-    "DiffusionScheduler",
-    "MemorylessNoiseSchedule",
-    "NoiseSchedule",
-    "OptimalTransportScheduler",
-    "Scheduler",
-    # types
-    "DDBatch",
-    "DDTensor",
 ]

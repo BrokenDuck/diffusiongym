@@ -8,7 +8,7 @@ import torch.distributions as dist
 import torch.nn.functional as F
 from torch import nn
 
-from diffusiongym.base_models.base import BaseModel
+from diffusiongym.base_models import BaseModel
 from diffusiongym.registry import base_model_registry
 from diffusiongym.schedulers import OptimalTransportScheduler, Scheduler
 from diffusiongym.train import train_base_model

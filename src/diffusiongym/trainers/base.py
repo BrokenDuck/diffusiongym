@@ -10,6 +10,7 @@ Experience types are distinct per algorithm because each algorithm needs
 different trajectory data.
 """
 
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -18,17 +19,94 @@ from typing import Any
 import torch
 from torch import Generator, Tensor
 
-from diffusiongym.core.dynamics import FlowDynamics
-from diffusiongym.core.environment import FlowEnvironment, PolicyBundle
-from diffusiongym.core.rollout import (
+from diffusiongym.core import (
     EulerMaruyamaSampler,
     EulerODESampler,
+    FlowDynamics,
+    FlowEnvironment,
+    LatentGeometry,
+    PolicyBundle,
     Rollout,
     RolloutStorage,
 )
 from diffusiongym.types import DDBatch
 
 type Conditioning = Mapping[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# Time-grid stability (shared by every stochastic algorithm)
+# ---------------------------------------------------------------------------
+
+
+def deterministic_contraction[StateT: DDBatch](
+    *,
+    dynamics: FlowDynamics[StateT],
+    geometry: LatentGeometry[StateT],
+    x: StateT,
+    t: Tensor,
+    dt: Tensor,
+) -> Tensor:
+    """‖x + b(x, t; v=0) Δt‖ / ‖x‖ for each sample, shape (batch,).
+
+    The drift of an affine-Gaussian SDE is linear in x, so with the velocity set
+    to zero this is exactly the amplification factor of the state-dependent part
+    of one Euler-Maruyama mean update. A value above 1 means the discretization
+    is expansive: the step is not a usable approximation of the SDE, however
+    small the model error is.
+    """
+    zero_velocity = x.map_state_tensors(torch.zeros_like)
+    drift = dynamics.coefficients(x=x, t=t, velocity=zero_velocity).drift
+    moved = x + drift * dt
+    norm_x = geometry.squared_norm(x, reduction="sum").sqrt()
+    norm_moved = geometry.squared_norm(moved, reduction="sum").sqrt()
+    return norm_moved / norm_x.clamp_min(1e-12)
+
+
+def check_time_grid_stability[StateT: DDBatch](
+    *,
+    rollout: Rollout[StateT, Any],
+    dynamics: FlowDynamics[StateT],
+    geometry: LatentGeometry[StateT],
+    require: bool,
+    algorithm: str,
+) -> float:
+    """Flag Euler-Maruyama steps whose deterministic part expands the state.
+
+    Returns the worst amplification factor over the grid. Raises (``require``)
+    or warns when any step is expansive.
+    """
+    worst = 0.0
+    offenders: list[str] = []
+    for k, step in enumerate(rollout.steps):
+        factor = deterministic_contraction(
+            dynamics=dynamics,
+            geometry=geometry,
+            x=step.x,
+            t=step.t.to(step.x.device),
+            dt=step.dt.to(step.x.device).reshape(1).expand(len(step.x)),
+        ).max()
+        worst = max(worst, float(factor.item()))
+        if factor > 1.0 + 1e-4:
+            offenders.append(
+                f"step {k}: t={step.t[0].item():.4g}, dt={step.dt.item():.4g}, "
+                f"|x| amplified by {factor.item():.2f}x"
+            )
+    if offenders:
+        message = (
+            f"{algorithm}: the time grid is unstable for these dynamics — the "
+            "deterministic part of the Euler-Maruyama update expands the state "
+            "instead of contracting it, so the transition is not an "
+            "approximation of the SDE:\n  " + "\n  ".join(offenders) + "\n"
+            "The drift of a marginal-preserving SDE carries a 1/t term, so a "
+            "step needs dt small relative to t. Start the time grid at an "
+            "interior t_min instead of 0 — torch.linspace(0, 1, T + 2)[1:] "
+            "gives dt/t <= 1 everywhere — or use more steps."
+        )
+        if require:
+            raise ValueError(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
+    return worst
 
 
 @dataclass(frozen=True)
@@ -83,23 +161,30 @@ class EndpointExperience[StateT]:
 class TrajectoryExperience[StateT]:
     """Full trajectory experience for policy-gradient algorithms (Flow-GRPO).
 
-    Stores the complete rollout and per-sample advantages.
+    Stores the complete rollout, per-sample advantages, and the dynamics used
+    during collection so update() can recompute SDE drifts with the same kernel.
     """
 
     rollout: Rollout[StateT, Any]
     advantages: Tensor  # shape (n,)
+    dynamics: FlowDynamics[StateT]
 
 
 @dataclass
 class AdjointExperience[StateT]:
     """Trajectory + adjoint targets for Adjoint Matching.
 
-    adjoint_targets[k] is the per-step drift regression target at step k.
-    dynamics is stored so update() can recompute SDE drifts without re-acquiring it.
+    velocity_targets[k] is the path-velocity regression target at step k,
+    v_ref(x_k, t_k) - eta(t_k) * a_k, and loss_weights[k] is the 2 / sigma(t_k)^2
+    factor that turns the velocity error back into the control-space Adjoint
+    Matching loss (see trainers/adjoint_matching.py). Both are already detached.
+
+    dynamics is stored so update() stays consistent with collection.
     """
 
     rollout: Rollout[StateT, Any]
-    adjoint_targets: list[StateT]  # one per rollout step
+    velocity_targets: list[StateT]  # one per rollout step
+    loss_weights: list[Tensor]  # one per rollout step, shape (n,)
     dynamics: FlowDynamics[StateT]
 
 

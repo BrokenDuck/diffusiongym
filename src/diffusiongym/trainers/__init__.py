@@ -7,8 +7,8 @@ All algorithms implement the FineTuningAlgorithm interface:
   - synchronize_rollout_policy() — optional EMA/hard-copy
 """
 
-from diffusiongym.trainers.adjoint_matching import AdjointMatching
-from diffusiongym.trainers.base import (
+from .adjoint_matching import AdjointMatching
+from .base import (
     AdjointExperience,
     EndpointExperience,
     FineTuningAlgorithm,
@@ -16,19 +16,19 @@ from diffusiongym.trainers.base import (
     FineTuningRequirements,
     TrajectoryExperience,
 )
-from diffusiongym.trainers.diffusion_nft import DiffusionNFT
-from diffusiongym.trainers.flow_grpo import FlowGRPO
-from diffusiongym.trainers.orw_cfm import ORWCFM
+from .diffusion_nft import DiffusionNFT
+from .flow_grpo import FlowGRPO
+from .orw_cfm import ORWCFM
 
 __all__ = [
+    "ORWCFM",
+    "AdjointExperience",
+    "AdjointMatching",
+    "DiffusionNFT",
+    "EndpointExperience",
     "FineTuningAlgorithm",
     "FineTuningContext",
     "FineTuningRequirements",
-    "EndpointExperience",
-    "TrajectoryExperience",
-    "AdjointExperience",
-    "ORWCFM",
-    "DiffusionNFT",
     "FlowGRPO",
-    "AdjointMatching",
+    "TrajectoryExperience",
 ]

@@ -144,6 +144,10 @@ class DefaultEulerGaussianKernelFactory[StateT: DDBatch]:
         drift: StateT,
         diffusion: Tensor,
     ) -> GaussianMarkovKernel[StateT]:
+        # The mean uses the signed step, the variance the elapsed time |dt|: a
+        # descending time grid (t_0 > ... > t_T, as in the Flow-GRPO paper) would
+        # otherwise produce a negative variance and silently corrupt every
+        # log-probability and KL.
         mean = x + drift * dt
-        variance = diffusion**2 * dt
+        variance = diffusion**2 * dt.abs()
         return GaussianMarkovKernel(self.geometry, mean, variance)

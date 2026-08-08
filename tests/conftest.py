@@ -149,11 +149,16 @@ class _GaussianReward:
 
 
 class _DifferentiableReward:
-    """Differentiable version of the Gaussian reward."""
+    """Terminal cost g(x) = -r(x) for the Gaussian reward above.
+
+    A DifferentiableTerminalCost is *minimized*, so it must be the negated
+    reward: returning +r here would make Adjoint Matching steer away from the
+    reward the RewardEvaluator scores.
+    """
 
     def __call__(self, terminal_latent: DDTensor, *, conditioning: dict) -> Tensor:
         mu, sigma = -2.5, 0.8
-        return torch.exp(-0.5 * ((terminal_latent.data - mu) / sigma) ** 2).squeeze(-1)
+        return -torch.exp(-0.5 * ((terminal_latent.data - mu) / sigma) ** 2).squeeze(-1)
 
 
 @pytest.fixture(scope="session")

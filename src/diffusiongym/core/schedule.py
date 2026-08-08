@@ -134,3 +134,32 @@ class MemorylessDiffusionSchedule(ScalarDiffusionSchedule):
 
     def value(self, t: Tensor) -> Tensor:
         return (2.0 * self.eta(t)).clamp_min(0.0).sqrt()
+
+
+class ScaledMemorylessDiffusionSchedule(ScalarDiffusionSchedule):
+    """g(t) = noise_scale * sqrt(2 * eta(t)) — memoryless shape, tunable level.
+
+    This is the one-parameter family Flow-GRPO samples from. In the paper's
+    convention (s = 1 noise → s = 0 data, s = 1 - t) the rectified-flow
+    diffusion is
+
+        sigma_s = a * sqrt(s / (1 - s)),
+
+    which is exactly this schedule with a = sqrt(2) * noise_scale, and the drift
+    correction g(t)^2 / (2 eta(t)) then reduces to the constant a^2 / 2.
+
+    noise_scale = 1 recovers MemorylessDiffusionSchedule (a = sqrt(2)), the
+    maximum-noise member of the family and the one Adjoint Matching requires.
+    Flow-GRPO does not need memorylessness and is better conditioned below it:
+    the state-dependent part of an Euler-Maruyama mean update carries a factor
+    1 - (a^2 / 2) * dt / t, so halving `a` quarters the stiffness near t = 0.
+    """
+
+    def __init__(self, schedule: AffineSchedule, noise_scale: float = 1.0) -> None:
+        if noise_scale <= 0:
+            raise ValueError(f"noise_scale must be positive, got {noise_scale}.")
+        self.base = MemorylessDiffusionSchedule(schedule)
+        self.noise_scale = noise_scale
+
+    def value(self, t: Tensor) -> Tensor:
+        return self.base.value(t) * self.noise_scale

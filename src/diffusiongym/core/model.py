@@ -133,6 +133,77 @@ class PredictionConverter[StateT: DDBatch]:
         x_data_inferred = (x_t - noise * a) * (1.0 / b)
         return noise * da + x_data_inferred * db
 
+    def to_endpoint(
+        self,
+        *,
+        prediction: StateT,
+        kind: PredictionKind,
+        x_t: StateT,
+        t: Tensor,
+    ) -> StateT:
+        """Convert a native prediction to the predicted data endpoint x̂₁.
+
+        Used by inference-time guidance (SMC, see `core/smc.py`): scoring "where
+        this trajectory is headed" needs an endpoint estimate, not velocity, at
+        every intermediate step.
+        """
+        match kind:
+            case PredictionKind.ENDPOINT:
+                return prediction
+            case PredictionKind.VELOCITY:
+                return self._velocity_to_endpoint(velocity=prediction, x_t=x_t, t=t)
+            case PredictionKind.NOISE:
+                return self._noise_to_endpoint(noise=prediction, x_t=x_t, t=t)
+
+    def _velocity_to_endpoint(
+        self,
+        *,
+        velocity: StateT,
+        x_t: StateT,
+        t: Tensor,
+    ) -> StateT:
+        """x1 = (a*v - da_dt*x_t) / (a*db_dt - b*da_dt).
+
+        Inverts x_t = a*x0 + b*x1, v = da_dt*x0 + db_dt*x1 for x1 via the
+        schedule's Wronskian W = a*db_dt - b*da_dt (W ≡ 1 for
+        `RectifiedFlowSchedule`, so this reduces to x1 = x_t + (1-t)*v). Unlike
+        `_endpoint_to_velocity`/`_noise_to_velocity`, this is well-defined at
+        both t=0 and t=1 — it only needs W ≠ 0, not a(t) or b(t) individually
+        nonzero — so no interior-time restriction applies here.
+        """
+        a = self.schedule.a(t)
+        b = self.schedule.b(t)
+        da = self.schedule.da_dt(t)
+        db = self.schedule.db_dt(t)
+        wronskian = a * db - b * da
+
+        if torch.any(wronskian.abs() < self.denominator_epsilon):
+            raise ValueError(
+                "Cannot convert velocity prediction to endpoint because the "
+                "schedule's Wronskian a*db_dt - b*da_dt ≈ 0."
+            )
+
+        return (velocity * a - x_t * da) * (1.0 / wronskian)
+
+    def _noise_to_endpoint(
+        self,
+        *,
+        noise: StateT,
+        x_t: StateT,
+        t: Tensor,
+    ) -> StateT:
+        """x1 = (x_t - a*noise) / b."""
+        a = self.schedule.a(t)
+        b = self.schedule.b(t)
+
+        if torch.any(b.abs() < self.denominator_epsilon):
+            raise ValueError(
+                "Cannot convert noise prediction to endpoint because b(t) ≈ 0. "
+                "Use interior sampling times (t > ε)."
+            )
+
+        return (x_t - noise * a) * (1.0 / b)
+
 
 class VelocityRegression[StateT: DDBatch]:
     """Shared regression primitive used by all fine-tuning algorithms.

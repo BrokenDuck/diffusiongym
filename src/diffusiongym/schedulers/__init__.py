@@ -1,8 +1,15 @@
 """Schedulers for flow matching and diffusion models."""
 
-from diffusiongym.schedulers.base import MemorylessNoiseSchedule, NoiseSchedule, Scheduler
-from diffusiongym.schedulers.noise_schedules import ConstantNoiseSchedule
-from diffusiongym.schedulers.schedulers import CosineScheduler, DiffusionScheduler, OptimalTransportScheduler
+import warnings
+
+warnings.warn(
+    "Environments are part of the old codebasem, they are deprecated.",
+    category=DeprecationWarning,
+)
+
+from .base import MemorylessNoiseSchedule, NoiseSchedule, Scheduler
+from .noise_schedules import ConstantNoiseSchedule
+from .schedulers import CosineScheduler, DiffusionScheduler, OptimalTransportScheduler
 
 __all__ = [
     "ConstantNoiseSchedule",

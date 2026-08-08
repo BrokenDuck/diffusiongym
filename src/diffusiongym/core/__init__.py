@@ -10,6 +10,9 @@ Supported:
   - Affine interpolation schedule (RectifiedFlowSchedule, general AffineSchedule)
   - Velocity, endpoint, and noise prediction (PredictionConverter)
   - ODE and SDE sampling (EulerODESampler, EulerMaruyamaSampler)
+  - SMC guidance: SDE sampling twisted by a caller-supplied terminal potential,
+    via incremental resampling (SMCSampler) — same paths, same kernels, no new
+    dynamics profile
   - Gaussian Markov transition kernels (GaussianMarkovKernel)
   - Immutable environment facade (FlowEnvironment)
   - Algorithm-owned policy bundle (PolicyBundle)
@@ -22,22 +25,22 @@ Not supported (explicit exclusion):
   - Adaptive integrators
 """
 
-from diffusiongym.core.codec import DataCodec, IdentityCodec
-from diffusiongym.core.dynamics import (
+from .codec import DataCodec, IdentityCodec
+from .dynamics import (
     AffineFlowMarginalPreservingSDE,
     DynamicsCoefficients,
     FlowDynamics,
     MemorylessFlowSDE,
     ProbabilityFlowODE,
 )
-from diffusiongym.core.environment import FlowEnvironment, PolicyBundle
-from diffusiongym.core.kernel import (
+from .environment import FlowEnvironment, PolicyBundle
+from .kernel import (
     DefaultEulerGaussianKernelFactory,
     EulerGaussianKernelFactory,
     GaussianMarkovKernel,
     MarkovKernel,
 )
-from diffusiongym.core.model import (
+from .model import (
     FlowModel,
     PredictionConverter,
     PredictionKind,
@@ -45,32 +48,35 @@ from diffusiongym.core.model import (
     TorchFlowModelAdapter,
     VelocityRegression,
 )
-from diffusiongym.core.process import (
+from .process import (
     AffineGaussianForwardProcess,
     BaseSampler,
     ForwardBatch,
 )
-from diffusiongym.core.reward import (
+from .reward import (
     DifferentiableTerminalCost,
     RewardBatch,
     RewardEvaluator,
 )
-from diffusiongym.core.rollout import (
+from .rollout import (
     EulerMaruyamaSampler,
     EulerODESampler,
     Rollout,
     RolloutRequest,
     RolloutStep,
     RolloutStorage,
+    SMCStats,
 )
-from diffusiongym.core.schedule import (
+from .schedule import (
     AffineSchedule,
     ConstantDiffusionSchedule,
     MemorylessDiffusionSchedule,
     RectifiedFlowSchedule,
     ScalarDiffusionSchedule,
+    ScaledMemorylessDiffusionSchedule,
 )
-from diffusiongym.core.space import LatentGeometry, TensorGeometry
+from .smc import SMCSampler
+from .space import LatentGeometry, TensorGeometry
 
 __all__ = [  # noqa: RUF022
     # geometry
@@ -82,6 +88,7 @@ __all__ = [  # noqa: RUF022
     "ScalarDiffusionSchedule",
     "ConstantDiffusionSchedule",
     "MemorylessDiffusionSchedule",
+    "ScaledMemorylessDiffusionSchedule",
     # process
     "BaseSampler",
     "ForwardBatch",
@@ -116,8 +123,10 @@ __all__ = [  # noqa: RUF022
     "RolloutRequest",
     "RolloutStep",
     "Rollout",
+    "SMCStats",
     "EulerODESampler",
     "EulerMaruyamaSampler",
+    "SMCSampler",
     # environment
     "FlowEnvironment",
     "PolicyBundle",

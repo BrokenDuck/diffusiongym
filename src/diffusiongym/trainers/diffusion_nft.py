@@ -18,8 +18,7 @@ from collections.abc import Mapping
 import torch
 from torch import Generator, Tensor
 
-from diffusiongym.core.dynamics import FlowDynamics
-from diffusiongym.core.rollout import RolloutRequest, RolloutStorage
+from diffusiongym.core import FlowDynamics, RolloutRequest, RolloutStorage
 from diffusiongym.trainers.base import (
     EndpointExperience,
     FineTuningAlgorithm,
@@ -128,7 +127,7 @@ class DiffusionNFT[StateT: DDBatch, RawT](
         # Map normalized rewards to [0,1] optimality probability
         r = (0.5 + 0.5 * r_norm.clamp(-1.0, 1.0)).to(device)
 
-        latent = experience.latent.to(device)  # type: ignore[attr-defined]
+        latent = experience.latent.to(device)
         n = len(latent)
 
         total_loss = 0.0
