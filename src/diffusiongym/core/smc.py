@@ -11,6 +11,14 @@ and the increments telescope to the terminal ratio, so a resample decision at an
 point along the trajectory only ever needs information already computed for the
 SDE step itself.
 
+The telescoping is what makes the intermediate `x_hat1` estimates *only* a
+variance-reduction device: they steer early resampling, then cancel, and the
+weight the final resample acts on is `exp(a(x_1)/beta)` at the true terminal
+state. That last increment is applied explicitly at the end of `rollout()` and
+is load-bearing — without it the intermediate estimates leak into the target,
+and how good they are (i.e. the step count) silently decides what distribution
+is sampled.
+
 `log_potential` is supplied at `rollout()` time, not the constructor, because it
 is typically bound to a specific iteration's surrogate state (see
 `reward_actflow`'s acquisition reward) and this sampler has no opinion about what
@@ -217,6 +225,25 @@ class SMCSampler[StateT: DDBatch, RawT]:
                 logw = torch.zeros(n, device=device)
 
             x = x_next
+
+        # Terminal anchor. Every increment above is a *twisting* term: it steers
+        # resampling early, and must cancel out of the final weight. It only
+        # does so if the last potential in the telescoping sum is the one at
+        # `x_1` itself, which is what Uehara et al.'s Algorithm 1 evaluates —
+        # the weight update is always taken at the state actually reached, and
+        # the last state reached is the terminal one. With this increment the
+        # accumulated `logw` since the last resample is exactly
+        # `log_potential(x_1)`, i.e. the importance weight for
+        # `p_theta * exp(a/beta)` under the proposal `p_theta` the kernel
+        # already is, so `potential_every` and the step count change only the
+        # variance, never the target law.
+        #
+        # Free, and exact: at `t = 1` the endpoint estimate *is* the state, so
+        # this needs no model call and no `to_endpoint` extrapolation — it is
+        # the one potential evaluation in the whole rollout that carries no
+        # `x_hat1` error.
+        logphi_terminal = log_potential(x, time_grid[-1].expand(n)).to(device)
+        logw = logw + (logphi_terminal - logphi_prev)
 
         # Final resample: the returned batch must be unweighted, like the
         # ODE/SDE samplers' output, or every downstream consumer would need to

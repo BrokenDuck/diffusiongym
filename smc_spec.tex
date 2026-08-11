@@ -1,0 +1,61 @@
+\section{Derivative-Free Guidance}\label{sec:derivative_free}
+
+We begin by outlining two primary derivative-free approaches that do not rely on differentiable models. As discussed in the introduction, constructing differentiable models in molecular design can be challenging due to the non-differentiable nature of reward feedback for the following reasons. 
+
+\begin{AIbox}{
+Scenarios where Non-Differentiable Reward Feedback is Beneficial}
+\begin{itemize}
+    \item Reward feedback is often provided through black-box physics-based simulations (e.g., docking simulations). 
+    \item Non-differentiable features (e.g., molecular descriptors) may be required to build reward models.
+    \item Reward models may involve non-differentiable architectures, such as specified graph neural networks or XGBoost.
+\end{itemize}    
+\end{AIbox}
+
+Therefore, these derivative-free methods are particularly useful in such scenarios. In this section, we first introduce sequential Monte Carlo (SMC)-based guidance, followed by value-based importance sampling approach.
+
+\subsection{SMC-Based Guidance}\label{sec:SMC}
+
+We first provide an intuitive explanation of SMC-based guidance proposed in \citet{wu2024practical,dou2024diffusion,cardoso2023monte,phillips2024particle}, which combine SMC (a.k.a. particle filter) \citep{gordon1993novel,kitagawa1993monte,del2006sequential} with diffusion models. While there are several variants, we focus here on the simplest version. Since SMC-based guidance is an iterative method,  let us consider the process at $t$.  At this stage, we assume there are $N$ samples (particles), $\{x^{[i]}_{t}\}_{i=1}^N$, each with uniform weights: $
+1/N\sum_{i=1}^N \delta_{x^{[i]}_{t}}. $
+Given this distribution, our goal is to sample from the optimal policy $p^{\star}_{t-1}(\cdot \mid \cdot)$. 
+
+
+For this purpose, using a proposal distribution $q_{t-1}(\cdot | x^{[i]}_{t}):\Xcal \to \Delta(\Xcal)$, such as policies from pre-trained models (we will discuss this choice further in \pref{sec:choice}), we generate new samples $\{\bar x^{[i]}_{t-1}\}$. Ideally, we aim to sample from the optimal policy in \eqref{eq:soft}. To approximate this, based on importance sampling, we consider the following weighted empirical distribution:
+\begin{align*}
+     \sum_{i=1}^N \frac{w^{[i]}_{t-1}  }{\sum_{j=1}^N w^{[j]}_{t-1}}\delta_{ \bar x^{[i]}_{t-1}}, \quad w^{[i]}_{t-1} = \frac{p^{\star}_{t-1}(\bar x^{[i]}_{t-1}|x^{[i]}_{t} )  }{q_{t-1}( \bar x^{[i]}_{t-1}|x^{[i]}_{t} ) } = \frac{ p^{\pre}_{t-1}(\bar x^{[i]}_{t-1}|x^{[i]}_{t} )\exp(v(\bar x^{[i]}_{t-1})/\alpha) }{q_{t-1}(\bar x^{[i]}_{t-1}|x^{[i]}_{t} ) \exp(v(x^{[i]}_{t})/\alpha )   }. 
+\end{align*}
+However, as the weights become increasingly non-uniform, the approximation quality deteriorates. To mitigate this, SMC performs resampling with replacement, generating an equally weighted Dirac delta distribution: 
+\begin{align}\label{eq:resampling}
+    \frac{1}{N} \sum_{i=1}^N \delta_{x^{[i]}_{t-1}}, x^{[i]}_{t-1}:= \bar x^{[\zeta_i]}_{t-1}, \zeta_i \sim \mathrm{Cat}\left [\left\{   \frac{w^{[i]}_{t-1}  }{\sum_{j=1}^N w^{[j]}_{t-1}} \right\}_{i=1}^N \right ]. 
+\end{align}
+
+The complete algorithm is summarized in \pref{alg:SMC}. Note that to maintain computational efficiency, the resampling step \eqref{eq:resampling} is executed when the effective sample size, which indicates the degree of weight uniformity, falls below a predefined threshold.
+
+
+\begin{algorithm}[!th]
+\caption{SMC-Based Guidance (e.g.,  \citet{wu2024practical,dou2024diffusion,cardoso2023monte,phillips2024particle})}\label{alg:SMC}
+\begin{algorithmic}[1]
+     \STATE {\bf Require}: Estimated (potentially \textbf{non-differentiable}) value functions $\{\hat v_t(x)\}_{t=T}^0$ (\pref{sec:method_value}), pre-trained diffusion models $\{p^{\pre}_t\}_{t=T}^0$, proposal polices $\{q_t\}_{t=T}^0$, hyperparameter $\alpha \in \RR$, Batch size $N$
+     \FOR{$t\in [T+1,\cdots, 1]$}
+       \STATE \textbf{Importance sampling step:}  \label{line:IS} 
+Generate $i \in [1,\cdots, N]; x^{[i]}_{t-1} \sim q_{t-1}(\cdot| x^{[i]}_{t})$
+       \STATE Update weights:
+       \begin{align*}
+          w^{[i]} \leftarrow  \frac{ p^{\pre}_{t-1}(x^{[i]}_{t-1}|x^{[i]}_{t} )\exp(\hat v_{t-1}(x^{[i]}_{t-1})/\alpha) }{q_{t-1}(x^{[i]}_{t-1}|x^{[i]}_{t} )\exp(\hat v_t(x^{[i]}_{t})/\alpha)  }w^{[i]}.  
+       \end{align*} 
+        \STATE \textbf{Resampling step:} Calculate the effective sample size $
+            \frac{\{\sum_i w^{[i]} \} ^2  }{\sum \{ w^{[i]}\}^2}.$
+        If it falls below a certain threshold, resample by selecting new indices with replacement:  \\ 
+       $$\{x^{[i]}_{t-1}\}_{i=1}^N  \leftarrow \{x^{\zeta^{[i]}_{t-1}}_{t-1}\}_{i=1}^N,\quad \{\zeta^{[i]}_{t-1}\}_{i=1}^N \sim \mathrm{Cat}\left ( \left \{\frac{w^{[i]}_{t-1}}{\sum_{j=1}^N w^{[j]}_{t-1} } \right \}_{i=1}^N\right).$$\label{line:selection}
+     \ENDFOR
+  \STATE {\bf Output}: $\{ x^{[i]}_0\}_{i=1}^N$
+\end{algorithmic}
+\end{algorithm} 
+
+
+Finally, we highlight several additional considerations:
+\begin{itemize} 
+\item \textbf{Potential Lack of Diversity:} In practice, SMC-generated samples may suffer from sample collapse (i.e., generating the same sample in one batch) for the purpose of reward maximization. This occurs because, as $\alpha \to 0$, the effective sample size approaches $1$. Another challenge with SMC-based methods for reward maximization is that the effective sample size does not necessarily guarantee true diversity among the samples. As a result, even when the effective sample size is controlled, the generated samples may still lack sufficient diversity.
+\item \textbf{Eliminating Inferior Samples via Global Interaction:} This algorithm involves interactions between batches, allowing the removal of low-quality particles to concentrate resources on more promising ones. A variant of this strategy has also proven effective in autoregressive language models \citep{zhang2024accelerating}. 
+\end{itemize}
+
