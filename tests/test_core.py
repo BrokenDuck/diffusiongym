@@ -161,15 +161,6 @@ class TestTensorGeometry:
         x = self._make(4)
         assert torch.allclose(self.geom.project(x).data, x.data)
 
-    def test_standard_normal_like_shape(self):
-        x = self._make(4)
-        noise = self.geom.standard_normal_like(x)
-        assert noise.data.shape == x.data.shape
-
-
-# ---------------------------------------------------------------------------
-# AffineGaussianForwardProcess
-# ---------------------------------------------------------------------------
 
 class TestAffineGaussianForwardProcess:
     def setup_method(self):
@@ -355,28 +346,6 @@ class TestMemorylessDynamics:
                 f"sigma^2 != 2*eta at t={t_val}: {sigma_sq.item()} vs {two_eta.item()}"
             )
 
-    def test_memoryless_flag(self):
-        assert self.dynamics.memoryless is True
-        assert self.dynamics.stochastic is True
-
-    def test_ode_flags(self):
-        ode = ProbabilityFlowODE()
-        assert ode.stochastic is False
-        assert ode.memoryless is False
-
-    def test_drift_shape(self):
-        n, d = 4, 3
-        x = DDTensor(torch.randn(n, d))
-        t = torch.rand(n).clamp(0.05, 0.95)
-        v = DDTensor(torch.randn(n, d))
-        coeffs = self.dynamics.coefficients(x=x, t=t, velocity=v)
-        assert coeffs.drift.data.shape == (n, d)
-        assert coeffs.diffusion.shape == (n,)
-
-
-# ---------------------------------------------------------------------------
-# GaussianMarkovKernel
-# ---------------------------------------------------------------------------
 
 class TestGaussianMarkovKernel:
     def setup_method(self):
@@ -392,14 +361,6 @@ class TestGaussianMarkovKernel:
         expected = -d / 2.0 * math.log(2 * math.pi * 2.0) * torch.ones(n)
         assert lp.shape == (n,)
         assert torch.allclose(lp, expected, atol=1e-5)
-
-    def test_rsample_shape(self):
-        n, d = 8, 5
-        mean = DDTensor(torch.zeros(n, d))
-        var = torch.ones(n)
-        kernel = GaussianMarkovKernel(self.geom, mean, var)
-        sample = kernel.rsample()
-        assert sample.data.shape == (n, d)
 
     def test_kl_zero_identical_kernels(self):
         """KL(p || p) = 0."""

@@ -102,6 +102,26 @@ def dict_to_device[T](d: T, device: torch.device | str) -> T:
     raise TypeError(f"Unsupported leaf type: {type(d)}")
 
 
+def index_conditioning[T: dict](conditioning: T, idx: torch.Tensor) -> T:
+    """Sub-select a conditioning dict to a batch of indices, repeats allowed.
+
+    Every sampler that reorders particles — resampling, tiling one seed into
+    several proposals, drawing a roll-in pool — has to carry the conditioning
+    along with them or the batch silently desynchronises from what it was
+    conditioned on. Leaves that are not per-row (a scalar guidance weight, a
+    shared prompt string) pass through untouched.
+    """
+    result: dict = {}
+    for k, v in conditioning.items():
+        if isinstance(v, torch.Tensor):
+            result[k] = v[idx]
+        elif isinstance(v, list):
+            result[k] = [v[i] for i in idx.tolist()]
+        else:
+            result[k] = v
+    return result  # ty: ignore[invalid-return-type]
+
+
 @contextmanager
 def temporary_workdir() -> Generator[str]:
     """Context manager that runs code in a fresh temporary directory.

@@ -19,7 +19,19 @@ from diffusiongym.core import (
 )
 from diffusiongym.registry import Registry, domain_of
 
-ALGORITHMS = ["orw_cfm", "diffusion_nft", "flow_grpo", "adjoint_matching"]
+ALGORITHMS = [
+    "orw_cfm",
+    "diffusion_nft",
+    "flow_grpo",
+    "adjoint_matching",
+    "forward_kl_distillation",
+]
+
+#: Algorithms whose `update()` needs state only a driving loop can supply, so
+#: `collect()` alone is not enough to run one iteration. They are still covered
+#: by every *wiring* test above — it is only the smoke test they opt out of,
+#: and they have their own end-to-end test that supplies the missing piece.
+LOOP_DRIVEN = {"forward_kl_distillation"}
 
 
 def _make(algorithm: str, **kwargs):
@@ -125,7 +137,7 @@ class TestRejections:
 
 
 class TestSetupRuns:
-    @pytest.mark.parametrize("algorithm", ALGORITHMS)
+    @pytest.mark.parametrize("algorithm", sorted(set(ALGORITHMS) - LOOP_DRIVEN))
     def test_one_iteration_end_to_end(self, algorithm):
         """A setup from `make()` must run without any further wiring."""
         setup = _make(algorithm, algorithm_kwargs=_small(algorithm))
@@ -136,9 +148,7 @@ class TestSetupRuns:
             time_grid=setup.time_grid,
             conditioning={},
         )
-        metrics = setup.algorithm.update(
-            context=setup.context, experience=experience
-        )
+        metrics = setup.algorithm.update(context=setup.context, experience=experience)
         setup.algorithm.synchronize_rollout_policy(context=setup.context)
         assert "loss" in metrics
 
@@ -150,12 +160,8 @@ class TestSetupRuns:
         )
         assert setup.algorithm.lambda_reward == 3.0
         # reward_kwargs must reach both the reward and its differentiable cost
-        assert torch.equal(
-            setup.environment.reward.c, torch.tensor([0.0, 1.0])
-        )
-        assert torch.equal(
-            setup.environment.terminal_cost.c, torch.tensor([0.0, 1.0])
-        )
+        assert torch.equal(setup.environment.reward.c, torch.tensor([0.0, 1.0]))
+        assert torch.equal(setup.environment.terminal_cost.c, torch.tensor([0.0, 1.0]))
 
     def test_optimizer_factory_is_honoured(self):
         setup = _make(
@@ -176,5 +182,12 @@ def _small(algorithm: str) -> dict:
             return {"inner_epochs": 1, "batch_size": 4}
         case "flow_grpo":
             return {"group_size": 2, "ppo_epochs": 1, "ppo_batch_size": 8}
+        case "forward_kl_distillation":
+            return {
+                "inner_epochs": 1,
+                "batch_size": 4,
+                "roll_in_size": 8,
+                "num_teacher_proposals": 2,
+            }
         case _:
             return {"train_steps_per_iter": 1, "train_batch_size": 4}

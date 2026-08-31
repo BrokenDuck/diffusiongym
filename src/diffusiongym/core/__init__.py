@@ -13,6 +13,13 @@ Supported:
   - SMC guidance: SDE sampling twisted by a caller-supplied terminal potential,
     via incremental resampling (SMCSampler) — same paths, same kernels, no new
     dynamics profile
+  - Local exploration: partial noising to an intermediate level, then denoising
+    back (local_proposals, tail_time_grid)
+  - Temporal Score Rescaling: a local sampling temperature, applied as a model
+    wrapper so every sampler inherits it unchanged (rescale.py)
+  - Entropic optimal transport on particle sets, whose dual potential is the
+    first variation a locality penalty needs (ot.py) — plain tensors, no state
+    type, no critic network
   - Gaussian Markov transition kernels (GaussianMarkovKernel)
   - Immutable environment facade (FlowEnvironment)
   - Algorithm-owned policy bundle (PolicyBundle)
@@ -53,6 +60,13 @@ from .process import (
     BaseSampler,
     ForwardBatch,
 )
+from .ot import (
+    sinkhorn_cost,
+    sinkhorn_divergence_potential,
+    sinkhorn_potentials,
+)
+from .refine import local_proposals, tail_time_grid
+from .rescale import TemporalScoreRescaling
 from .reward import (
     DifferentiableTerminalCost,
     RewardBatch,
@@ -100,6 +114,7 @@ __all__ = [  # noqa: RUF022
     "VelocityRegression",
     "TorchFlowModelAdapter",
     "TorchBaseSampler",
+    "TemporalScoreRescaling",
     # codec
     "DataCodec",
     "IdentityCodec",
@@ -127,6 +142,12 @@ __all__ = [  # noqa: RUF022
     "EulerODESampler",
     "EulerMaruyamaSampler",
     "SMCSampler",
+    "local_proposals",
+    "tail_time_grid",
+    # optimal transport
+    "sinkhorn_potentials",
+    "sinkhorn_cost",
+    "sinkhorn_divergence_potential",
     # environment
     "FlowEnvironment",
     "PolicyBundle",

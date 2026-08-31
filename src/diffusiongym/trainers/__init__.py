@@ -18,6 +18,12 @@ from .base import (
 )
 from .diffusion_nft import DiffusionNFT
 from .flow_grpo import FlowGRPO
+from .forward_kl import (
+    DistillExperience,
+    ForwardKLDistillation,
+    LogWeight,
+    ReferenceSource,
+)
 from .orw_cfm import ORWCFM
 
 __all__ = [
@@ -25,10 +31,14 @@ __all__ = [
     "AdjointExperience",
     "AdjointMatching",
     "DiffusionNFT",
+    "DistillExperience",
     "EndpointExperience",
     "FineTuningAlgorithm",
     "FineTuningContext",
     "FineTuningRequirements",
     "FlowGRPO",
+    "ForwardKLDistillation",
+    "LogWeight",
+    "ReferenceSource",
     "TrajectoryExperience",
 ]

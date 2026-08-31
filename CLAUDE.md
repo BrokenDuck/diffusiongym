@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `diffusiongym` implements a deliberately narrow **affine-Gaussian flow-matching environment** used to reward-fine-tune pretrained flow models (toy models, SD3.5-style image latents, FlowMol Gaussian molecular states). It is a git submodule of the `reward-actflow` monorepo (checked out at `/home/jonat/reward-actflow/packages/diffusiongym`), managed as a `uv` workspace member from the repo root.
 
-The design intent is written out in `specs.md`, `specs_additional.md`, `specs_types.md`, `specs_test_example.md`, and `spec_flowgrpo.md` at the repo root — read these before extending the framework's mathematical scope. The core rule from `specs.md`: only support affine Gaussian paths `x_t = a(t) z + b(t) x_1` with a Gaussian base, scalar state-independent diffusion `g(t)`, and Euler/Euler–Maruyama integration. Generalizing beyond that (non-Gaussian bases, non-affine interpolants, state-dependent diffusion, manifold states, adaptive solvers) is explicitly out of scope until an actual experiment needs it — don't add it speculatively.
+The design intent used to be written out in `specs.md`, `specs_additional.md`, `specs_types.md`, `specs_test_example.md` and `spec_flowgrpo.md`; **none of those files exist in this repo or the monorepo any more**, so what follows is the record. The core rule: only support affine Gaussian paths `x_t = a(t) z + b(t) x_1` with a Gaussian base, scalar state-independent diffusion `g(t)`, and Euler/Euler–Maruyama integration. Generalizing beyond that (non-Gaussian bases, non-affine interpolants, state-dependent diffusion, manifold states, adaptive solvers) is explicitly out of scope until an actual experiment needs it — don't add it speculatively.
 
 ## ⚠️ Two parallel architectures — use `core/`, not `environments/`
 
@@ -23,7 +23,7 @@ The codebase is mid-refactor. There are **two independent implementations** livi
 Run everything through `uv` from this directory (`packages/diffusiongym`); it resolves against the monorepo's root `uv.lock`.
 
 ```bash
-uv run pytest                          # full test suite (currently 54 tests, all passing)
+uv run pytest                          # full test suite (183 passing, 2 xfailed)
 uv run pytest tests/test_core.py       # core framework unit tests only
 uv run pytest tests/test_trainers_smoke.py   # end-to-end smoke tests per algorithm
 uv run pytest tests/test_core.py::TestGaussianMarkovKernel::test_kl_nonnegative  # single test
@@ -42,7 +42,7 @@ No build/lint/test commands are defined at the monorepo root beyond the shared `
 
 Everything is generic over a state type `StateT: DDBatch` (see `types/batch.py`) — a batch of continuous latent states supporting batched arithmetic, indexing, and concatenation. `types/tensor.py`'s `DDTensor` is the simple unconstrained implementation used by the toy models; a structured molecular state would implement the same `DDBatch` protocol.
 
-Three concepts that are easy to conflate are kept as **separate objects** on purpose (see `specs.md` §"Separate three meanings of schedule"):
+Three concepts that are easy to conflate are kept as **separate objects** on purpose:
 
 | Concept | Type | Meaning |
 |---|---|---|
@@ -67,12 +67,21 @@ Key modules and how they compose:
   - **`steps` is not re-indexed on resampling.** Only the live particles and `conditioning` are, so after the first resample `steps[k].x_next` and `steps[k+1].x` describe different particles and `terminal_latent` does not match `steps[-1].x_next`. Harmless while only `terminal_latent` is consumed; a trap for anything reading trajectories (Flow-GRPO's per-step log-probs, Adjoint Matching's backward pass), which the "interchangeable with the other two samplers' output" framing above invites.
 
   **Fixed: the twisting now anchors at the terminal state.** `rollout()` applies a final increment `log_potential(x_1) - logphi_prev` before the final resample, so the increments telescope to `exp(a(x_1)/beta)` — the importance weight for `p_theta * exp(a/beta)` under the proposal the kernel already is (Uehara et al.'s Algorithm 1 evaluates the weight update at the state actually reached; with `q = p^pre` the transition ratio cancels and only that value difference remains). It is free and exact: at `t = 1` the endpoint estimate *is* the state, so no model call and no `to_endpoint` extrapolation. `potential_every` and the step count now change only the variance, never the target law. Before the fix the intermediate estimates leaked into the target, and on `reward_actflow`'s toy at 16 steps — where `corr(sigma(x_hat1), sigma(x_1))` is 0.05 — SMC realised 1.6% of the reweighting its potential offered; after, 70%. **Consequence to watch:** the weights are now genuinely non-uniform, so the spec's `alpha -> 0` collapse caveat is live. Measured at n=16 on that toy, distinct terminal particles were 15.0/16 at `acq_beta=1`, 14.1 at 0.5, 8.7 at 0.2, 2.8 at 0.05, 1.4 at 0.01 — de-duplicate before spending a per-sample verifier budget, or keep `acq_beta >= 0.5`.
+- **`core/refine.py`** — `local_proposals` + `tail_time_grid`: forward-noise clean seeds to an intermediate level `s` and denoise back under the model's own SDE, `L` independent times per seed, returning both `z` at level `s` and the endpoint. A *local* mutation operator where `SMCSampler` is a global one, with `tail_time_grid` as the mutation-radius dial. Requires stochastic dynamics for the usual reason.
+
+  **It performs no selection, and that is a deliberate reversal.** An earlier `RefinementSampler` here tilted the denoising itself, picking among `L` proposals at every step in proportion to `exp(log_potential(x_hat1))`. That targeted no distribution at all — its own docstring said so — and forced a temperature knob onto a sampler with no business having an opinion. Selection now belongs to the caller and is applied once to the whole candidate set, which is what lets `reward_actflow`'s CGD make it an optimisation step in probability space. If you need per-step guidance toward a *specified* law, that is `SMCSampler`, which is correct for it.
+- **`core/rescale.py`** — `TemporalScoreRescaling`: Temporal Score Rescaling (Xu et al., arXiv:2510.01184), a *local* sampling temperature. Multiplies the score by `r_t(k, sigma) = (SNR·sigma² + 1) / (SNR·sigma²/k + 1)`, which runs from `1` at the noise end to `k` at the data end, and carries that through the affine change of variables to velocity space. `k > 1` sharpens, `k < 1` broadens, `k = 1` is the exact identity.
+
+  Two things about it. **The schedule is the mechanism, not a detail.** Scaling the score by a *constant* — the obvious way to sample colder or hotter — over-suppresses exploration while the model is still choosing a mode and under-suppresses it near the data, which biases samples onto central modes and drops peripheral ones (the paper's Theorem C.1: no prior generates a temperature-scaled law that way). Leaving `r_t = 1` at high noise keeps mode *selection* untouched and rescales only the within-mode spread, so the target is `sum_m w_m N(mu_m, Sigma_m/k)` — same weights, rescaled covariances. It is therefore not `p^(1/T)`, which reweights the modes too.
+
+  **It is a `FlowModel` wrapper, not a sampler or a dynamics profile.** It declares `prediction_kind = VELOCITY` and returns velocity, so every sampler inherits it by being handed the wrapper in place of the model, and no sampler needed a new argument. Sampling only — it holds no parameters and exposes no `state_dict`, because rescaling the field a *training* loss regresses onto would change what is being fit rather than how it is sampled. `_coefficients` evaluates an algebraically cancelled form, so the `db/b` pole at `t = 0` never appears and no interior-time restriction applies.
+- **`core/ot.py`** — `sinkhorn_potentials` / `sinkhorn_cost` / `sinkhorn_divergence_potential`: entropic OT on a cost matrix. Plain tensors in and out, no `DDBatch` anywhere, so it is data-type abstract by construction — the caller decides what a point is and supplies `cost[i, j]`. It exists for **first variations**: the dual potential `f` at `x_i` *is* `delta W_c(nu, rho) / delta nu`, so an optimal-transport locality term costs one scaling loop rather than a critic network and its training loop. Log-domain throughout (`exp(-C/eps)` underflows at every useful `eps`), and debiased by default — the entropic bias otherwise makes a cloud look local *to itself*, which reads downstream as the penalty working. Checked against `scipy.optimize.linear_sum_assignment`, exact for equal-size uniform marginals, in `tests/test_ot.py`; `eps = 0.05 * mean(C)` lands within 3%, always high.
 - **`core/reward.py`** — two distinct protocols: `RewardEvaluator` (black-box, used by every algorithm) vs. `DifferentiableTerminalCost` (required only by Adjoint Matching; a black-box reward is not sufficient because it may have zero gradients).
 - **`core/environment.py`** — `FlowEnvironment` is an **immutable** facade bundling geometry, base sampler, forward process, regression, codec, and reward. It deliberately owns **no policies** — those live in `PolicyBundle` (`train`/`rollout`/`reference` models), owned by the fine-tuning algorithm, so multi-algorithm comparisons and checkpointing don't get tangled with mutable environment state.
 
 ## Fine-tuning algorithms (`src/diffusiongym/trainers/`)
 
-All four algorithms implement `FineTuningAlgorithm` (`trainers/base.py`) with the same lifecycle:
+All five algorithms implement `FineTuningAlgorithm` (`trainers/base.py`) with the same lifecycle:
 
 ```
 validate()   → check FineTuningRequirements against context/dynamics, fail fast with a clear message
@@ -90,7 +99,9 @@ Each algorithm declares its own `FineTuningRequirements` (needs reference policy
 
   **It needs a finer time grid than the other three, and degrades quietly when it doesn't get one.** The lean adjoint is integrated backward with explicit Euler, so its error accumulates along the trajectory and an underestimated adjoint is an under-applied tilt — not instability, just a weaker result that looks like a converged run. Measured on the toy at `lambda = 2`, the tilt actually achieved was 0.45 at 10 steps, 0.66 at 20, 1.84 at 40. Nothing else recovers it: `train_steps_per_iter` does not (above ~50 it *hurts*, overfitting stale targets — `r^2` fell to 0.17), and more outer iterations only does so very slowly (0.44 → 0.73 over 60 → 300). Raise the step count first. A second-order (Heun) adjoint integrator would buy the same accuracy at fewer steps and is the obvious optimization if AM's cost ever matters.
 
-When adding a fifth algorithm, follow this same pattern rather than introducing a new lifecycle shape.
+- **`forward_kl.py`** (`ForwardKLDistillation`) — timestep-wise forward-KL distillation of a reward-tilted teacher, and the only one of the five whose base distribution is **supplied per round** rather than fixed. `ReferenceSource` is a flat pool of endpoints plus a draw probability, so the caller can widen it as it discovers new regions; a geometric tilt of a fixed `p_theta` cannot place mass outside `supp(p_theta)`, which is why none of the other four can be used for set expansion. Two details are load-bearing and both were originally absent: the roll-in's own endpoint is candidate 0 of the teacher (without it, a roll-in from outside `supp(p_rollout)` regresses onto the lazy policy's guess and nothing ever expands), and each proposal contributes only its *displacement* from the kernel mean, which makes `theta = theta_bar` under uniform weights an exact stationary point — the one correctness property of this loss checkable without a ground-truth target, and `test_forward_kl.py` checks it. Loss is in endpoint space; see the module docstring for the three reasons.
+
+When adding a sixth algorithm, follow this same pattern rather than introducing a new lifecycle shape.
 
 ### Comparing algorithms: knobs are not on the same scale
 
@@ -124,6 +135,8 @@ setup.algorithm.update(context=setup.context, experience=experience)
 ```
 
 It exists because four of the wiring decisions are ones that **fail silently when made by hand**, and all four are derivable from `algorithm.requirements`: the SDE profile (memoryless for AM, stochastic for Flow-GRPO, ODE otherwise), an interior time grid whenever the dynamics are stochastic, a reference policy only where one is needed, and a differentiable terminal cost only where one exists. Every bug this codebase has had in that area was one of those four.
+
+`algorithm` and `requirements` are **mutually exclusive, and exactly one is required**. Pass `requirements=FineTuningRequirements(...)` instead of an id when the caller owns its own training step: the four decisions above are still made and still have to agree with that step, but `setup.algorithm` is `None` and nothing is validated against it — there is no algorithm object to validate. This is what `reward_actflow`'s two loops use. Registering a class whose only real content is a `requirements` property, purely to reach this function, would be a registry entry that names nothing.
 
 Two provider protocols in `registry.py` are the seam a new data type plugs into — implement these and nothing else changes:
 

@@ -46,9 +46,15 @@ from diffusiongym.core import (
     SMCSampler,
     SMCStats,
     TensorGeometry,
+    TemporalScoreRescaling,
     TorchBaseSampler,
     TorchFlowModelAdapter,
     VelocityRegression,
+    local_proposals,
+    sinkhorn_cost,
+    sinkhorn_divergence_potential,
+    sinkhorn_potentials,
+    tail_time_grid,
 )
 from diffusiongym.make import FineTuningSetup, make, make_time_grid
 from diffusiongym.registry import (
@@ -131,6 +137,12 @@ __all__ = [
     "make_time_grid",
     "modality_registry",
     "reward_provider_registry",
+    "TemporalScoreRescaling",
+    "local_proposals",
+    "sinkhorn_cost",
+    "sinkhorn_divergence_potential",
+    "sinkhorn_potentials",
+    "tail_time_grid",
     # registry (legacy)
     "base_model_registry",
     "reward_registry",

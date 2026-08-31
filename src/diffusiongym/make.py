@@ -68,7 +68,7 @@ from diffusiongym.registry import (
     modality_registry,
     reward_provider_registry,
 )
-from diffusiongym.trainers.base import FineTuningContext
+from diffusiongym.trainers.base import FineTuningContext, FineTuningRequirements
 
 type OptimizerFactory = Callable[[Any], torch.optim.Optimizer]
 
@@ -84,16 +84,17 @@ class FineTuningSetup:
     context:
         Environment + policies + optimizer + samplers.
     algorithm:
-        The configured `FineTuningAlgorithm`.
+        The configured `FineTuningAlgorithm`, or `None` when `make()` was given
+        bare `requirements` instead of a registered id.
     dynamics:
-        The SDE/ODE profile chosen from the algorithm's requirements.
+        The SDE/ODE profile chosen from the requirements.
     time_grid:
         A grid valid for those dynamics — interior when they are stochastic.
     """
 
     environment: FlowEnvironment
     context: FineTuningContext
-    algorithm: Any
+    algorithm: Any | None
     dynamics: FlowDynamics
     time_grid: Tensor
 
@@ -115,12 +116,14 @@ def _register_builtins() -> None:
         AdjointMatching,
         DiffusionNFT,
         FlowGRPO,
+        ForwardKLDistillation,
     )
 
     algorithm_registry.register("orw_cfm", ORWCFM)
     algorithm_registry.register("diffusion_nft", DiffusionNFT)
     algorithm_registry.register("flow_grpo", FlowGRPO)
     algorithm_registry.register("adjoint_matching", AdjointMatching)
+    algorithm_registry.register("forward_kl_distillation", ForwardKLDistillation)
 
     import diffusiongym.toy.providers  # noqa: F401
 
@@ -129,7 +132,8 @@ def make(
     *,
     modality: str,
     reward: str,
-    algorithm: str,
+    algorithm: str | None = None,
+    requirements: FineTuningRequirements | None = None,
     discretization_steps: int = 40,
     device: torch.device | str | None = None,
     learning_rate: float = 3e-4,
@@ -149,7 +153,19 @@ def make(
         Id in `reward_provider_registry`, e.g. "toy/linear".
     algorithm:
         Id in `algorithm_registry`: "orw_cfm", "diffusion_nft", "flow_grpo",
-        or "adjoint_matching".
+        or "adjoint_matching". Mutually exclusive with `requirements`.
+    requirements:
+        Wire the setup from these capability requirements instead of from a
+        registered algorithm's. `setup.algorithm` is then `None` and nothing is
+        validated against it — there is no algorithm object to validate.
+
+        This is for a caller that owns its own training step and only wants the
+        wiring: the SDE/ODE profile, the interior time grid, the reference
+        policy and the terminal cost still have to agree with what that step
+        assumes, and each disagreement is a silent failure rather than a crash,
+        which is precisely what `make()` is for. Registering a class whose only
+        real content is a `requirements` property, purely to reach this
+        function, would be a registry entry that names nothing.
     discretization_steps:
         Rollout steps. Adjoint Matching integrates its adjoint backward with
         explicit Euler, so its error accumulates over the trajectory and shows
@@ -177,6 +193,14 @@ def make(
         algorithm's requirements cannot be met (for instance Adjoint Matching
         with a reward that has no differentiable form).
     """
+    if (algorithm is None) == (requirements is None):
+        raise ValueError(
+            "make() takes exactly one of `algorithm` (a registered id) and "
+            "`requirements` (capability requirements for a training step the "
+            f"caller owns); got algorithm={algorithm!r} and "
+            f"requirements={requirements!r}."
+        )
+
     _register_builtins()
 
     modality_domain = domain_of(modality)
@@ -192,8 +216,14 @@ def make(
     reward_source = reward_provider_registry.get(reward).instantiate(
         **(reward_kwargs or {})
     )
-    algo = algorithm_registry.get(algorithm).instantiate(**(algorithm_kwargs or {}))
-    requirements = algo.requirements
+    algo = (
+        algorithm_registry.get(algorithm).instantiate(**(algorithm_kwargs or {}))
+        if algorithm is not None
+        else None
+    )
+    if algo is not None:
+        requirements = algo.requirements
+    assert requirements is not None  # guaranteed by the exactly-one check above
 
     device = torch.device(device) if device is not None else torch.device("cpu")
     geometry = provider.geometry()
@@ -203,9 +233,10 @@ def make(
     terminal_cost = reward_source.terminal_cost()
     if requirements.needs_differentiable_terminal_cost and terminal_cost is None:
         raise ValueError(
-            f"{algorithm!r} requires a differentiable terminal cost, but reward "
-            f"{reward!r} does not provide one. Pair it with a differentiable "
-            "reward, or choose an algorithm that only needs a black-box reward."
+            f"{algorithm or 'the given requirements'!r} requires a "
+            f"differentiable terminal cost, but reward {reward!r} does not "
+            "provide one. Pair it with a differentiable reward, or choose an "
+            "algorithm that only needs a black-box reward."
         )
 
     environment = FlowEnvironment(
@@ -257,8 +288,11 @@ def make(
         discretization_steps, stochastic=dynamics.stochastic, device=device
     )
 
-    # Fail here rather than after a rollout.
-    algo.validate(context=context, dynamics=dynamics)
+    # Fail here rather than after a rollout. Nothing to check when the caller
+    # supplied the requirements directly: `validate` compares an algorithm
+    # against them, and both sides would be the same object.
+    if algo is not None:
+        algo.validate(context=context, dynamics=dynamics)
 
     return FineTuningSetup(
         environment=environment,
@@ -300,9 +334,7 @@ def _make_dynamics(*, requirements, schedule, noise_scale: float) -> FlowDynamic
     if requirements.needs_stochastic_rollout:
         return AffineFlowMarginalPreservingSDE(
             affine_schedule=schedule,
-            diffusion_schedule=ScaledMemorylessDiffusionSchedule(
-                schedule, noise_scale
-            ),
+            diffusion_schedule=ScaledMemorylessDiffusionSchedule(schedule, noise_scale),
         )
     return ProbabilityFlowODE()
 

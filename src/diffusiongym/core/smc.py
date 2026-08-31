@@ -39,23 +39,11 @@ from diffusiongym.core.reward import RewardBatch
 from diffusiongym.core.rollout import Rollout, RolloutRequest, RolloutStep, SMCStats
 from diffusiongym.core.space import LatentGeometry
 from diffusiongym.types import DDBatch
+from diffusiongym.utils import index_conditioning
 
 type Conditioning = Mapping[str, Any]
 type LogPotential[StateT] = Callable[[StateT, Tensor], Tensor]
 type ResampleMethod = Literal["systematic", "multinomial"]
-
-
-def _index_conditioning(conditioning: Conditioning, idx: Tensor) -> dict:
-    """Sub-select a conditioning dict to a batch of indices (with repeats)."""
-    result: dict[str, Any] = {}
-    for k, v in conditioning.items():
-        if isinstance(v, Tensor):
-            result[k] = v[idx]
-        elif isinstance(v, list):
-            result[k] = [v[i] for i in idx.tolist()]
-        else:
-            result[k] = v
-    return result
 
 
 def _systematic_resample(
@@ -221,7 +209,7 @@ class SMCSampler[StateT: DDBatch, RawT]:
                 idx = self._resample_indices(logw, generator=generator)
                 x_next = x_next.index_select(idx)
                 logphi_prev = logphi_prev.index_select(0, idx)
-                conditioning = _index_conditioning(conditioning, idx)
+                conditioning = index_conditioning(dict(conditioning), idx)
                 logw = torch.zeros(n, device=device)
 
             x = x_next
@@ -250,7 +238,7 @@ class SMCSampler[StateT: DDBatch, RawT]:
         # know about `logw` to use these particles correctly.
         idx = self._resample_indices(logw, generator=generator)
         x = x.index_select(idx)
-        conditioning = _index_conditioning(conditioning, idx)
+        conditioning = index_conditioning(dict(conditioning), idx)
 
         terminal_latent = x
         terminal_sample = None
